@@ -115,7 +115,6 @@ splitToken:
 		 </SearchEngine>
 		
 		
-		
 		<SearchEngine engine="Youtube" domainSubstring=".youtube.com" >
 			<splitToken plainToken="?search_query=" regexToken="\\?search_query=" />
 		 </SearchEngine>
@@ -142,10 +141,18 @@ splitToken:
 		<SearchEngine engine="GIbiru" domainSubstring=".gibiru.com" >
 			<splitToken plainToken="?q=" regexToken="\\?q=" />
 		  </SearchEngine>
-			
 		
+
 		<SearchEngine engine="Wiki" domainSubstring=".wiki." >
+			<splitToken plainToken="?title=" regexToken="\\?title=" />
+		  </SearchEngine>		
+		
+		<SearchEngine engine="Wiki.com" domainSubstring=".wiki.com" >
 			<splitToken plainToken="?cx=" regexToken="\\?cx=" />
+		  </SearchEngine>
+		  
+		  <SearchEngine engine="Wikipedia" domainSubstring=".wikipedia.org" >
+			<splitToken plainToken="?search=" regexToken="\\?search=" />
 		  </SearchEngine>
 				
 		<SearchEngine engine="Cutestat" domainSubstring=".cutestat.com" >
