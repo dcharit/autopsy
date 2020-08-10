@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2012-2014 Basis Technology Corp.
+ * Copyright 2012-2019 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -36,6 +36,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import javax.swing.filechooser.FileSystemView;
+import org.apache.commons.io.FilenameUtils;
 import org.hyperic.sigar.Sigar;
 import org.hyperic.sigar.ptql.ProcessFinder;
 import org.openide.modules.InstalledFileLocator;
@@ -51,6 +52,9 @@ import org.sleuthkit.datamodel.TskCoreException;
 public class PlatformUtil {
 
     private static final String PYTHON_MODULES_SUBDIRECTORY = "python_modules"; //NON-NLS
+    private static final String CLASSIFIERS_SUBDIRECTORY = "object_detection_classifiers"; //NON-NLS
+    private static final String OCR_LANGUAGE_SUBDIRECTORY = "ocr_language_packs"; //NON-NLS
+    private static final String OCR_LANGUAGE_PACK_EXT = "traineddata";
     private static String javaPath = null;
     public static final String OS_NAME_UNKNOWN = NbBundle.getMessage(PlatformUtil.class, "PlatformUtil.nameUnknown");
     public static final String OS_VERSION_UNKNOWN = NbBundle.getMessage(PlatformUtil.class, "PlatformUtil.verUnknown");
@@ -114,6 +118,44 @@ public class PlatformUtil {
      */
     public static String getUserPythonModulesPath() {
         return getUserDirectory().getAbsolutePath() + File.separator + PYTHON_MODULES_SUBDIRECTORY;
+    }
+
+    /**
+     * Get root path where the user's Ocr language packs are stored.
+     *
+     * @return Absolute path to the Ocr language packs root directory.
+     */
+    public static String getOcrLanguagePacksPath() {
+        return getUserDirectory().getAbsolutePath() + File.separator + OCR_LANGUAGE_SUBDIRECTORY;
+    }
+
+    /**
+     * Get the names of the language packs installed at the user directory.
+     *
+     * @return List of language packs base names
+     */
+    public static List<String> getOcrLanguagePacks() {
+        File languagePackRootDir = new File(getOcrLanguagePacksPath());
+
+        List<String> languagePacks = new ArrayList<>();
+        for (File languagePack : languagePackRootDir.listFiles()) {
+            String fileExt = FilenameUtils.getExtension(languagePack.getName());
+            if (!languagePack.isDirectory() && OCR_LANGUAGE_PACK_EXT.equals(fileExt)) {
+                String packageName = FilenameUtils.getBaseName(languagePack.getName());
+                languagePacks.add(packageName);
+            }
+        }
+
+        return languagePacks;
+    }
+
+    /**
+     * Get root path where the user's object detection classifiers are stored.
+     *
+     * @return Absolute path to the object detection classifiers root directory.
+     */
+    public static String getObjectDetectionClassifierPath() {
+        return getUserDirectory().getAbsolutePath() + File.separator + CLASSIFIERS_SUBDIRECTORY;
     }
 
     /**
@@ -310,19 +352,17 @@ public class PlatformUtil {
             return (System.getProperty("os.arch").contains("64")); //NON-NLS
         }
     }
-    
-    
+
     /**
-     * Attempts to determine whether the JVM is 64-bit or 32-bit. 
-     * May not be completely reliable for non-Windows operating systems.
+     * Attempts to determine whether the JVM is 64-bit or 32-bit. May not be
+     * completely reliable for non-Windows operating systems.
      *
      * @return True if the JVM is 64-bit. False otherwise.
      */
     public static boolean is64BitJVM() {
         return (System.getProperty("sun.arch.data.model").equals("64"));
     }
-    
-    
+
     /**
      * Get a list of all physical drives attached to the client's machine. Error
      * threshold of 4 non-existent physical drives before giving up.
@@ -358,7 +398,7 @@ public class PlatformUtil {
             File[] files = dev.listFiles();
             for (File f : files) {
                 String name = f.getName();
-                if ((name.contains("hd") || name.contains("sd")) && f.canRead() && name.length() == 3) { //NON-NLS
+                if ((name.contains("hd") || name.contains("sd") || name.contains("disk")) && f.canRead() && name.length() <= 5) { //NON-NLS
                     String path = "/dev/" + name; //NON-NLS
                     if (canReadDrive(path)) {
                         try {
@@ -401,7 +441,7 @@ public class PlatformUtil {
             File[] files = dev.listFiles();
             for (File f : files) {
                 String name = f.getName();
-                if ((name.contains("hd") || name.contains("sd")) && f.canRead() && name.length() == 4) { //NON-NLS
+                if ((name.contains("hd") || name.contains("sd") || name.contains("disk")) && f.canRead() && name.length() <= 7) { //NON-NLS
                     String path = "/dev/" + name; //NON-NLS
                     if (canReadDrive(path)) {
                         drives.add(new LocalDisk(path, path, f.getTotalSpace()));

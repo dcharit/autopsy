@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011-2014 Basis Technology Corp.
+ * Copyright 2011-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -36,6 +36,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.logging.Level;
+import javax.swing.DefaultComboBoxModel;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JTable;
@@ -51,14 +52,13 @@ import javax.swing.table.TableCellRenderer;
 import org.openide.util.NbBundle;
 import org.sleuthkit.autopsy.coreutils.Logger;
 import org.sleuthkit.autopsy.coreutils.MessageNotifyUtil;
-import org.sleuthkit.autopsy.ingest.IngestMessage.*;
 import org.sleuthkit.autopsy.ingest.IngestMessage.MessageType;
 import org.sleuthkit.datamodel.BlackboardArtifact;
 
 /**
  * Notification window showing messages from modules to user
- *
  */
+@SuppressWarnings("PMD.SingularField") // UI widgets cause lots of false positives
 class IngestMessagePanel extends JPanel implements TableModelListener {
 
     private final MessageTableModel tableModel;
@@ -133,7 +133,7 @@ class IngestMessagePanel extends JPanel implements TableModelListener {
         jScrollPane1.setPreferredSize(new java.awt.Dimension(32767, 32767));
 
         messageTable.setBackground(new java.awt.Color(221, 221, 235));
-        messageTable.setFont(messageTable.getFont().deriveFont(messageTable.getFont().getStyle() & ~java.awt.Font.BOLD, 12));
+        messageTable.setFont(messageTable.getFont().deriveFont(messageTable.getFont().getSize()+1f));
         messageTable.setModel(tableModel);
         messageTable.setAutoResizeMode(javax.swing.JTable.AUTO_RESIZE_OFF);
         messageTable.setAutoscrolls(false);
@@ -149,7 +149,6 @@ class IngestMessagePanel extends JPanel implements TableModelListener {
 
         sortByLabel.setText(org.openide.util.NbBundle.getMessage(IngestMessagePanel.class, "IngestMessagePanel.sortByLabel.text")); // NOI18N
 
-        sortByComboBox.setFont(sortByComboBox.getFont().deriveFont(sortByComboBox.getFont().getStyle() & ~java.awt.Font.BOLD, 11));
         sortByComboBox.setToolTipText(org.openide.util.NbBundle.getMessage(IngestMessagePanel.class, "IngestMessagePanel.sortByComboBox.toolTipText")); // NOI18N
         sortByComboBox.addActionListener(new java.awt.event.ActionListener() {
             public void actionPerformed(java.awt.event.ActionEvent evt) {
@@ -157,16 +156,12 @@ class IngestMessagePanel extends JPanel implements TableModelListener {
             }
         });
 
-        totalMessagesNameLabel.setFont(totalMessagesNameLabel.getFont().deriveFont(totalMessagesNameLabel.getFont().getStyle() & ~java.awt.Font.BOLD, 11));
         totalMessagesNameLabel.setText(org.openide.util.NbBundle.getMessage(IngestMessagePanel.class, "IngestMessagePanel.totalMessagesNameLabel.text")); // NOI18N
 
-        totalMessagesNameVal.setFont(totalMessagesNameVal.getFont().deriveFont(totalMessagesNameVal.getFont().getStyle() & ~java.awt.Font.BOLD, 11));
         totalMessagesNameVal.setText(org.openide.util.NbBundle.getMessage(IngestMessagePanel.class, "IngestMessagePanel.totalMessagesNameVal.text")); // NOI18N
 
-        totalUniqueMessagesNameLabel.setFont(totalUniqueMessagesNameLabel.getFont().deriveFont(totalUniqueMessagesNameLabel.getFont().getStyle() & ~java.awt.Font.BOLD, 11));
         totalUniqueMessagesNameLabel.setText(org.openide.util.NbBundle.getMessage(IngestMessagePanel.class, "IngestMessagePanel.totalUniqueMessagesNameLabel.text")); // NOI18N
 
-        totalUniqueMessagesNameVal.setFont(totalUniqueMessagesNameVal.getFont().deriveFont(totalUniqueMessagesNameVal.getFont().getStyle() & ~java.awt.Font.BOLD, 11));
         totalUniqueMessagesNameVal.setText(org.openide.util.NbBundle.getMessage(IngestMessagePanel.class, "IngestMessagePanel.totalUniqueMessagesNameVal.text")); // NOI18N
 
         javax.swing.GroupLayout controlPanelLayout = new javax.swing.GroupLayout(controlPanel);
@@ -181,11 +176,11 @@ class IngestMessagePanel extends JPanel implements TableModelListener {
                 .addGap(101, 101, 101)
                 .addComponent(totalMessagesNameLabel)
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                .addComponent(totalMessagesNameVal, javax.swing.GroupLayout.DEFAULT_SIZE, 24, Short.MAX_VALUE)
+                .addComponent(totalMessagesNameVal, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
                 .addGap(22, 22, 22)
                 .addComponent(totalUniqueMessagesNameLabel)
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                .addComponent(totalUniqueMessagesNameVal, javax.swing.GroupLayout.DEFAULT_SIZE, 24, Short.MAX_VALUE)
+                .addComponent(totalUniqueMessagesNameVal, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
                 .addGap(22, 22, 22))
         );
         controlPanelLayout.setVerticalGroup(
@@ -204,7 +199,7 @@ class IngestMessagePanel extends JPanel implements TableModelListener {
         layout.setHorizontalGroup(
             layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
             .addComponent(controlPanel, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
-            .addComponent(jScrollPane1, javax.swing.GroupLayout.DEFAULT_SIZE, 357, Short.MAX_VALUE)
+            .addComponent(jScrollPane1, javax.swing.GroupLayout.DEFAULT_SIZE, 376, Short.MAX_VALUE)
         );
         layout.setVerticalGroup(
             layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
@@ -245,7 +240,7 @@ class IngestMessagePanel extends JPanel implements TableModelListener {
          * It is not possible to internationalize the list of options in a ComboBox
          * inside of the generated form code. So, it is done here.
          */
-        sortByComboBox.setModel(new javax.swing.DefaultComboBoxModel<String>(new String[] {
+        sortByComboBox.setModel(new DefaultComboBoxModel<>(new String[] {
             NbBundle.getMessage(this.getClass(), "IngestMessagePanel.sortByComboBox.model.time"), 
             NbBundle.getMessage(this.getClass(), "IngestMessagePanel.sortByComboBox.model.priority")}));
 
@@ -519,7 +514,7 @@ class IngestMessagePanel extends JPanel implements TableModelListener {
             if (moduleName != null && m.getMessageType() == IngestMessage.MessageType.DATA) {
                 //not a manager message, a data message, then group
                 if (!groupings.containsKey(moduleName)) {
-                    groupings.put(moduleName, new HashMap<String, List<IngestMessageGroup>>());
+                    groupings.put(moduleName, new HashMap<>());
                 }
                 final Map<String, List<IngestMessageGroup>> groups = groupings.get(moduleName);
                 //groups for this uniqueness
@@ -564,7 +559,7 @@ class IngestMessagePanel extends JPanel implements TableModelListener {
                             messageGroup = first;
                             //move to bottom of table
                             //remove from existing position
-                            int toRemove = 0;
+                            int toRemove;
                             while ((toRemove = getTableEntryIndex(uniqueness)) != -1) {
                                 messageData.remove(toRemove);
                                 //remove the row, will be added to the bottom
@@ -869,7 +864,7 @@ class IngestMessagePanel extends JPanel implements TableModelListener {
             cell.setHorizontalAlignment(SwingConstants.CENTER);
 
             // increase the font size
-            cell.setFont(cell.getFont().deriveFont(Font.PLAIN, 16));
+            cell.setFont(cell.getFont().deriveFont(Font.PLAIN, cell.getFont().getSize()+5));
 
             final IngestMessageGroup messageGroup = tableModel.getMessageGroup(row);
             if (messageGroup != null) {
@@ -902,8 +897,8 @@ class IngestMessagePanel extends JPanel implements TableModelListener {
             Component cell = super.getTableCellRendererComponent(
                     table, value, false, false, row, column);
 
-            Font visitedFont = cell.getFont().deriveFont(Font.PLAIN, 12);
-            Font notVisitedFont = cell.getFont().deriveFont(Font.BOLD, 12);
+            Font visitedFont = cell.getFont().deriveFont(Font.PLAIN, cell.getFont().getSize()+1);
+            Font notVisitedFont = cell.getFont().deriveFont(Font.BOLD, cell.getFont().getSize()+1);
 
             if (column == 3) {
                 String subject = (String) value;
@@ -942,7 +937,7 @@ class IngestMessagePanel extends JPanel implements TableModelListener {
             Object aValue = value;
             if (value instanceof Date) {
                 Date date = (Date) value;
-                DateFormat df = new SimpleDateFormat("HH:mm:ss");
+                DateFormat df = new SimpleDateFormat("yyyy/MM/dd HH:mm:ss");
                 aValue = df.format(date);
             } else {
                 throw new RuntimeException(NbBundle.getMessage(this.getClass(),

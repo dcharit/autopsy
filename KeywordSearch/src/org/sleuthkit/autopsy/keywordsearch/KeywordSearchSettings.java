@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2012-2014 Basis Technology Corp.
+ * Copyright 2012-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,12 +23,12 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.logging.Level;
-
 import org.openide.util.NbBundle;
 import org.sleuthkit.autopsy.coreutils.Logger;
 import org.sleuthkit.autopsy.coreutils.ModuleSettings;
 import org.sleuthkit.autopsy.coreutils.StringExtract;
 import org.sleuthkit.autopsy.coreutils.StringExtract.StringExtractUnicodeTable.SCRIPT;
+import org.sleuthkit.autopsy.keywordsearch.KeywordSearchIngestModule.StringsExtractOptions;
 import org.sleuthkit.autopsy.keywordsearch.KeywordSearchIngestModule.UpdateFrequency;
 
 //This file contains constants and settings for KeywordSearch
@@ -39,7 +39,9 @@ class KeywordSearchSettings {
     static final String PROPERTIES_NSRL = NbBundle.getMessage(KeywordSearchSettings.class, "KeywordSearchSettings.propertiesNSRL.text", MODULE_NAME);
     static final String PROPERTIES_SCRIPTS = NbBundle.getMessage(KeywordSearchSettings.class, "KeywordSearchSettings.propertiesScripts.text", MODULE_NAME);
     static final String SHOW_SNIPPETS = "showSnippets"; //NON-NLS
-    static final boolean DEFAULT_SHOW_SNIPPETS = true;
+    static final boolean DEFAULT_SHOW_SNIPPETS = true;    
+    static final String OCR_ENABLED = "ocrEnabled"; //NON-NLS
+    static final boolean OCR_ENABLED_DEFAULT = false; // NON-NLS
     private static boolean skipKnown = true;
     private static final Logger logger = Logger.getLogger(KeywordSearchSettings.class.getName());
     private static UpdateFrequency UpdateFreq = UpdateFrequency.DEFAULT;
@@ -128,7 +130,29 @@ class KeywordSearchSettings {
         stringExtractOptions.put(key, val);
         ModuleSettings.setConfigSetting(PROPERTIES_OPTIONS, key, val);
     }
+    
+    /**
+     * Save OCR setting to permanent storage
+     * 
+     * @param enabled Is OCR enabled?
+     */
+    static void setOcrOption(boolean enabled) {
+        ModuleSettings.setConfigSetting(PROPERTIES_OPTIONS, OCR_ENABLED, (enabled ? "true" : "false")); //NON-NLS
+    }    
 
+    /**
+     * Get OCR setting from permanent storage
+     * 
+     * @return Is OCR enabled?
+     */
+    static boolean getOcrOption() {
+        if (ModuleSettings.settingExists(PROPERTIES_OPTIONS, OCR_ENABLED)) {
+            return ModuleSettings.getConfigSetting(PROPERTIES_OPTIONS, OCR_ENABLED).equals("true"); //NON-NLS
+        } else {
+            return OCR_ENABLED_DEFAULT;
+        }
+    }
+    
     static void setShowSnippets(boolean showSnippets) {
         ModuleSettings.setConfigSetting(PROPERTIES_OPTIONS, SHOW_SNIPPETS, (showSnippets ? "true" : "false")); //NON-NLS
     }
@@ -211,15 +235,20 @@ class KeywordSearchSettings {
             KeywordSearchSettings.setUpdateFrequency(UpdateFrequency.DEFAULT);
         }
         //setting default Extract UTF8
-        if (!ModuleSettings.settingExists(KeywordSearchSettings.PROPERTIES_OPTIONS, TextExtractor.ExtractOptions.EXTRACT_UTF8.toString())) {
+        if (!ModuleSettings.settingExists(KeywordSearchSettings.PROPERTIES_OPTIONS, StringsExtractOptions.EXTRACT_UTF8.toString())) {
             logger.log(Level.INFO, "No configuration for UTF8 found, generating default..."); //NON-NLS
-            KeywordSearchSettings.setStringExtractOption(TextExtractor.ExtractOptions.EXTRACT_UTF8.toString(), Boolean.TRUE.toString());
+            KeywordSearchSettings.setStringExtractOption(StringsExtractOptions.EXTRACT_UTF8.toString(), Boolean.TRUE.toString());
         }
         //setting default Extract UTF16
-        if (!ModuleSettings.settingExists(KeywordSearchSettings.PROPERTIES_OPTIONS, TextExtractor.ExtractOptions.EXTRACT_UTF16.toString())) {
+        if (!ModuleSettings.settingExists(KeywordSearchSettings.PROPERTIES_OPTIONS, StringsExtractOptions.EXTRACT_UTF16.toString())) {
             logger.log(Level.INFO, "No configuration for UTF16 found, generating defaults..."); //NON-NLS
-            KeywordSearchSettings.setStringExtractOption(TextExtractor.ExtractOptions.EXTRACT_UTF16.toString(), Boolean.TRUE.toString());
+            KeywordSearchSettings.setStringExtractOption(StringsExtractOptions.EXTRACT_UTF16.toString(), Boolean.TRUE.toString());
         }
+        //setting OCR default (disabled by default)
+        if (!ModuleSettings.settingExists(KeywordSearchSettings.PROPERTIES_OPTIONS, OCR_ENABLED)) {
+            logger.log(Level.INFO, "No configuration for OCR found, generating defaults..."); //NON-NLS
+            KeywordSearchSettings.setOcrOption(OCR_ENABLED_DEFAULT);
+        }        
         //setting default Latin-1 Script
         if (!ModuleSettings.settingExists(KeywordSearchSettings.PROPERTIES_SCRIPTS, SCRIPT.LATIN_1.name())) {
             logger.log(Level.INFO, "No configuration for Scripts found, generating defaults..."); //NON-NLS

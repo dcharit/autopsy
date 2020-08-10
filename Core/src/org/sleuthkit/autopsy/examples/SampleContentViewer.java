@@ -31,7 +31,6 @@ package org.sleuthkit.autopsy.examples;
 
 import java.awt.Component;
 import org.openide.nodes.Node;
-import org.openide.util.lookup.ServiceProvider;
 import org.sleuthkit.autopsy.corecomponentinterfaces.DataContentViewer;
 import org.sleuthkit.datamodel.Content;
 import org.sleuthkit.datamodel.TskCoreException;
@@ -45,6 +44,7 @@ import org.sleuthkit.datamodel.TskCoreException;
  * compiled each time to ensure that it is compliant with the API.
  */
 // @ServiceProvider(service = DataContentViewer.class)
+@SuppressWarnings("PMD.SingularField") // UI widgets cause lots of false positives
 class SampleContentViewer extends javax.swing.JPanel implements DataContentViewer {
 
     /**
@@ -73,15 +73,15 @@ class SampleContentViewer extends javax.swing.JPanel implements DataContentViewe
             layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
             .addGroup(layout.createSequentialGroup()
                 .addContainerGap()
-                .addComponent(jLabel1, javax.swing.GroupLayout.PREFERRED_SIZE, 369, javax.swing.GroupLayout.PREFERRED_SIZE)
-                .addContainerGap(21, Short.MAX_VALUE))
+                .addComponent(jLabel1)
+                .addContainerGap(339, Short.MAX_VALUE))
         );
         layout.setVerticalGroup(
             layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
             .addGroup(layout.createSequentialGroup()
                 .addGap(19, 19, 19)
-                .addComponent(jLabel1, javax.swing.GroupLayout.PREFERRED_SIZE, 38, javax.swing.GroupLayout.PREFERRED_SIZE)
-                .addContainerGap(243, Short.MAX_VALUE))
+                .addComponent(jLabel1)
+                .addContainerGap(266, Short.MAX_VALUE))
         );
     }// </editor-fold>//GEN-END:initComponents
     // Variables declaration - do not modify//GEN-BEGIN:variables

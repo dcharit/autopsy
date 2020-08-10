@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2012 Basis Technology Corp.
+ * Copyright 2012-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,11 +18,10 @@
  */
 package org.sleuthkit.autopsy.report;
 
-import java.awt.*;
-
 /**
  * The panel shown for all TableReportModules when configuring report modules.
  */
+@SuppressWarnings("PMD.SingularField") // UI widgets cause lots of false positives
 public class DefaultReportConfigurationPanel extends javax.swing.JPanel {
 
     /**
@@ -43,9 +42,7 @@ public class DefaultReportConfigurationPanel extends javax.swing.JPanel {
 
         infoLabel = new javax.swing.JLabel();
 
-        setFont(getFont().deriveFont(getFont().getStyle() & ~java.awt.Font.BOLD, 11));
-
-        infoLabel.setFont(infoLabel.getFont().deriveFont((infoLabel.getFont().getStyle() | java.awt.Font.ITALIC) & ~java.awt.Font.BOLD, 11));
+        infoLabel.setFont(infoLabel.getFont().deriveFont((infoLabel.getFont().getStyle() | java.awt.Font.ITALIC)));
         org.openide.awt.Mnemonics.setLocalizedText(infoLabel, org.openide.util.NbBundle.getMessage(DefaultReportConfigurationPanel.class, "DefaultReportConfigurationPanel.infoLabel.text")); // NOI18N
 
         javax.swing.GroupLayout layout = new javax.swing.GroupLayout(this);

@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011-2016 Basis Technology Corp.
+ * Copyright 2011-2019 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -32,14 +32,16 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.logging.Level;
-import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import javax.annotation.Nonnull;
@@ -47,6 +49,7 @@ import javax.annotation.concurrent.Immutable;
 import javax.swing.AbstractAction;
 import javax.swing.Action;
 import org.apache.commons.lang3.StringUtils;
+import org.openide.nodes.ChildFactory;
 import org.openide.nodes.Children;
 import org.openide.nodes.Node;
 import org.openide.nodes.NodeNotFoundException;
@@ -56,7 +59,9 @@ import org.openide.util.NbBundle;
 import org.openide.util.Utilities;
 import org.openide.util.lookup.Lookups;
 import org.sleuthkit.autopsy.casemodule.Case;
+import org.sleuthkit.autopsy.casemodule.NoCurrentCaseException;
 import org.sleuthkit.autopsy.corecomponents.DataResultTopComponent;
+import org.sleuthkit.autopsy.coreutils.Logger;
 import org.sleuthkit.autopsy.datamodel.AutopsyItemVisitor;
 import org.sleuthkit.autopsy.datamodel.AutopsyVisitableItem;
 import org.sleuthkit.autopsy.datamodel.BlackboardArtifactNode;
@@ -85,20 +90,28 @@ import org.sleuthkit.datamodel.TskData.DbType;
 final public class Accounts implements AutopsyVisitableItem {
 
     private static final Logger LOGGER = Logger.getLogger(Accounts.class.getName());
-
+    private static final String ICON_BASE_PATH = "/org/sleuthkit/autopsy/images/"; //NON-NLS
+    private static final Set<IngestManager.IngestJobEvent> INGEST_JOB_EVENTS_OF_INTEREST = EnumSet.of(IngestManager.IngestJobEvent.COMPLETED, IngestManager.IngestJobEvent.CANCELLED);
+    private static final Set<IngestManager.IngestModuleEvent> INGEST_MODULE_EVENTS_OF_INTEREST = EnumSet.of(IngestManager.IngestModuleEvent.DATA_ADDED);
+    
     @NbBundle.Messages("AccountsRootNode.name=Accounts")
     final public static String NAME = Bundle.AccountsRootNode_name();
 
     private SleuthkitCase skCase;
+    private final long filteringDSObjId; // 0 if not filtering/grouping by data source
+
     private final EventBus reviewStatusBus = new EventBus("ReviewStatusBus");
 
-    /**
+    /*
      * Should rejected accounts be shown in the accounts section of the tree.
      */
-    private boolean showRejected = false;
+    private boolean showRejected = false; //NOPMD redundant initializer
 
     private final RejectAccounts rejectActionInstance;
     private final ApproveAccounts approveActionInstance;
+    
+    // tracks the number of each account type found
+    private final AccountTypeResults accountTypeResults;
 
     /**
      * Constructor
@@ -106,15 +119,27 @@ final public class Accounts implements AutopsyVisitableItem {
      * @param skCase The SleuthkitCase object to use for db queries.
      */
     public Accounts(SleuthkitCase skCase) {
-        this.skCase = skCase;
+        this(skCase, 0);
+    }
 
+    /**
+     * Constructor
+     *
+     * @param skCase The SleuthkitCase object to use for db queries.
+     * @param objId  Object id of the data source
+     */
+    public Accounts(SleuthkitCase skCase, long objId) {
+        this.skCase = skCase;
+        this.filteringDSObjId = objId;
+        
         this.rejectActionInstance = new RejectAccounts();
         this.approveActionInstance = new ApproveAccounts();
+        this.accountTypeResults = new AccountTypeResults();
     }
 
     @Override
-    public <T> T accept(AutopsyItemVisitor<T> v) {
-        return v.visit(this);
+    public <T> T accept(AutopsyItemVisitor<T> visitor) {
+        return visitor.visit(this);
     }
 
     /**
@@ -129,12 +154,27 @@ final public class Accounts implements AutopsyVisitableItem {
     }
 
     /**
+     * Returns the clause to filter artifacts by data source.
+     *
+     * @return A clause that will or will not filter artifacts by datasource
+     *         based on the CasePreferences groupItemsInTreeByDataSource setting
+     */
+    private String getFilterByDataSourceClause() {
+        if (filteringDSObjId > 0) {
+            return "  AND blackboard_artifacts.data_source_obj_id = " + filteringDSObjId + " ";
+        }
+
+        return " ";
+    }
+
+    /**
      * Gets a new Action that when invoked toggles showing rejected artifacts on
      * or off.
      *
      * @return An Action that will toggle whether rejected artifacts are shown
      *         in the tree rooted by this Accounts instance.
      */
+    @Deprecated
     public Action newToggleShowRejectedAction() {
         return new ToggleShowRejected();
     }
@@ -145,28 +185,22 @@ final public class Accounts implements AutopsyVisitableItem {
      *
      * @param <X> The type of keys used by this factory.
      */
-    private abstract class ObservingChildren<X> extends Children.Keys<X> {
+    private abstract class ObservingChildren<X> extends ChildFactory.Detachable<X> {
 
         /**
          * Override of default constructor to force lazy creation of nodes, by
          * concrete instances of ObservingChildren
          */
         ObservingChildren() {
-            super(true);
+            super();
         }
 
         /**
          * Create of keys used by this Children object to represent the child
          * nodes.
          */
-        abstract protected Collection<X> createKeys();
-
-        /**
-         * Refresh the keys for this Children
-         */
-        void refreshKeys() {
-            setKeys(createKeys());
-        }
+        @Override
+        abstract protected boolean createKeys(List<X> list);
 
         /**
          * Handle a ReviewStatusChangeEvent
@@ -188,7 +222,7 @@ final public class Accounts implements AutopsyVisitableItem {
         @Override
         protected void addNotify() {
             super.addNotify();
-            refreshKeys();
+            refresh(true);
             reviewStatusBus.register(ObservingChildren.this);
         }
     }
@@ -199,136 +233,8 @@ final public class Accounts implements AutopsyVisitableItem {
     @NbBundle.Messages({"Accounts.RootNode.displayName=Accounts"})
     final public class AccountsRootNode extends DisplayableItemNode {
 
-        /**
-         * Creates child nodes for each account type in the db.
-         */
-        final private class AccountTypeFactory extends ObservingChildren<String> {
-
-            /*
-             * The pcl is in this class because it has the easiest mechanisms to
-             * add and remove itself during its life cycles.
-             */
-            private final PropertyChangeListener pcl = new PropertyChangeListener() {
-                @Override
-                public void propertyChange(PropertyChangeEvent evt) {
-                    String eventType = evt.getPropertyName();
-                    if (eventType.equals(IngestManager.IngestModuleEvent.DATA_ADDED.toString())) {
-                        /**
-                         * Checking for a current case is a stop gap measure
-                         * until a different way of handling the closing of
-                         * cases is worked out. Currently, remote events may be
-                         * received for a case that is already closed.
-                         */
-                        try {
-                            Case.getCurrentCase();
-                            /**
-                             * Even with the check above, it is still possible
-                             * that the case will be closed in a different
-                             * thread before this code executes. If that
-                             * happens, it is possible for the event to have a
-                             * null oldValue.
-                             */
-                            ModuleDataEvent eventData = (ModuleDataEvent) evt.getOldValue();
-                            if (null != eventData
-                                    && eventData.getBlackboardArtifactType().getTypeID() == ARTIFACT_TYPE.TSK_ACCOUNT.getTypeID()) {
-                                reviewStatusBus.post(eventData);
-                            }
-                        } catch (IllegalStateException notUsed) {
-                            // Case is closed, do nothing.
-                        }
-                    } else if (eventType.equals(IngestManager.IngestJobEvent.COMPLETED.toString())
-                            || eventType.equals(IngestManager.IngestJobEvent.CANCELLED.toString())) {
-                        /**
-                         * Checking for a current case is a stop gap measure
-                         * until a different way of handling the closing of
-                         * cases is worked out. Currently, remote events may be
-                         * received for a case that is already closed.
-                         */
-                        try {
-                            Case.getCurrentCase();
-                            refreshKeys();
-                        } catch (IllegalStateException notUsed) {
-                            // Case is closed, do nothing.
-                        }
-                    } else if (eventType.equals(Case.Events.CURRENT_CASE.toString())) {
-                        // case was closed. Remove listeners so that we don't get called with a stale case handle
-                        if (evt.getNewValue() == null) {
-                            removeNotify();
-                            skCase = null;
-                        }
-                    }
-                }
-            };
-
-            @Subscribe
-            @Override
-            void handleReviewStatusChange(ReviewStatusChangeEvent event) {
-                refreshKeys();
-            }
-
-            @Subscribe
-            @Override
-            void handleDataAdded(ModuleDataEvent event) {
-                refreshKeys();
-            }
-
-            @Override
-            protected List<String> createKeys() {
-                List<String> list = new ArrayList<>();
-                try (SleuthkitCase.CaseDbQuery executeQuery = skCase.executeQuery(
-                        "SELECT DISTINCT blackboard_attributes.value_text as account_type "
-                        + " FROM blackboard_attributes "
-                        + " WHERE blackboard_attributes.attribute_type_id = " + BlackboardAttribute.ATTRIBUTE_TYPE.TSK_ACCOUNT_TYPE.getTypeID());
-                        ResultSet resultSet = executeQuery.getResultSet()) {
-                    while (resultSet.next()) {
-                        String accountType = resultSet.getString("account_type");
-                        list.add(accountType);
-                    }
-                } catch (TskCoreException | SQLException ex) {
-                    LOGGER.log(Level.SEVERE, "Error querying for account_types", ex);
-                }
-                return list;
-            }
-
-            @Override
-            protected Node[] createNodes(String key) {
-                try {
-                    Account.Type accountType = Account.Type.valueOf(key);
-                    switch (accountType) {
-                        case CREDIT_CARD:
-                            return new Node[]{new CreditCardNumberAccountTypeNode()};
-                        default:
-                            return new Node[]{new DefaultAccountTypeNode(key)};
-                    }
-                } catch (IllegalArgumentException ex) {
-                    LOGGER.log(Level.WARNING, "Unknown account type: {0}", key);
-                    //Flesh out what happens with other account types here.
-                    return new Node[]{new DefaultAccountTypeNode(key)};
-                }
-            }
-
-            @Override
-            protected void removeNotify() {
-                IngestManager.getInstance().removeIngestJobEventListener(pcl);
-                IngestManager.getInstance().removeIngestModuleEventListener(pcl);
-                Case.removePropertyChangeListener(pcl);
-                super.removeNotify();
-            }
-
-            @Override
-            protected void addNotify() {
-                IngestManager.getInstance().addIngestJobEventListener(pcl);
-                IngestManager.getInstance().addIngestModuleEventListener(pcl);
-                Case.addPropertyChangeListener(pcl);
-                super.addNotify();
-                refreshKeys();
-            }
-
-        }
-
         public AccountsRootNode() {
-            super(Children.LEAF, Lookups.singleton(Accounts.this));
-            setChildren(Children.createLazy(AccountTypeFactory::new));
+            super(Children.create(new AccountTypeFactory(), true), Lookups.singleton(Accounts.this));
             setName(Accounts.NAME);
             setDisplayName(Bundle.Accounts_RootNode_displayName());
             this.setIconBaseWithExtension("org/sleuthkit/autopsy/images/accounts.png");    //NON-NLS
@@ -340,13 +246,319 @@ final public class Accounts implements AutopsyVisitableItem {
         }
 
         @Override
-        public <T> T accept(DisplayableItemNodeVisitor<T> v) {
-            return v.visit(this);
+        public <T> T accept(DisplayableItemNodeVisitor<T> visitor) {
+            return visitor.visit(this);
         }
 
         @Override
         public String getItemType() {
             return getClass().getName();
+        }
+    }
+    
+    /**
+     * Tracks the account types and the number of account types found.
+     */
+    private class AccountTypeResults {
+        private final Map<String, Long> counts = new HashMap<>();
+        
+        AccountTypeResults() {
+            update();
+        }
+        
+        /**
+         * Given the type name of the Account.Type, provides the count of those type.
+         * @param accountType   The type name of the Account.Type.
+         * @return              The number of results found for the given account type.
+         */
+        Long getCount(String accountType) {
+            return counts.get(accountType);
+        }
+        
+        /**
+         * Retrieves an alphabetically organized list of all the account types.
+         * @return      An alphabetically organized list of all the account types.
+         */
+        List<String> getTypes() {
+            List<String> types = new ArrayList<>(counts.keySet());
+            Collections.sort(types);
+            return types;
+        }
+        
+        /**
+         * Queries the database and updates the counts for each account type.
+         */
+        private void update() {
+            String accountTypesInUseQuery
+                    = "SELECT blackboard_attributes.value_text as account_type, COUNT(*) as count "
+                    + " FROM blackboard_artifacts " //NON-NLS
+                    + "      JOIN blackboard_attributes ON blackboard_artifacts.artifact_id = blackboard_attributes.artifact_id " //NON-NLS
+                    + " WHERE blackboard_artifacts.artifact_type_id = " + BlackboardArtifact.ARTIFACT_TYPE.TSK_ACCOUNT.getTypeID() //NON-NLS
+                    + " AND blackboard_attributes.attribute_type_id = " + BlackboardAttribute.ATTRIBUTE_TYPE.TSK_ACCOUNT_TYPE.getTypeID() //NON-NLS
+                    + getFilterByDataSourceClause()
+                    + " GROUP BY blackboard_attributes.value_text ";
+
+            try (SleuthkitCase.CaseDbQuery executeQuery = skCase.executeQuery(accountTypesInUseQuery);
+                    ResultSet resultSet = executeQuery.getResultSet()) {
+                
+                counts.clear();
+                while (resultSet.next()) {
+                    String accountType = resultSet.getString("account_type");
+                    Long count = resultSet.getLong("count");
+                    counts.put(accountType, count);
+                }
+            } catch (TskCoreException | SQLException ex) {
+                LOGGER.log(Level.SEVERE, "Error querying for account_types", ex);
+            }
+        }
+    }
+
+    /**
+     * Creates child nodes for each account type in the db.
+     */
+    private class AccountTypeFactory extends ObservingChildren<String> {
+        
+        /*
+         * The pcl is in this class because it has the easiest mechanisms to add
+         * and remove itself during its life cycles.
+         */
+        private final PropertyChangeListener pcl = new PropertyChangeListener() {
+            @Override
+            public void propertyChange(PropertyChangeEvent evt) {
+                String eventType = evt.getPropertyName();
+                if (eventType.equals(IngestManager.IngestModuleEvent.DATA_ADDED.toString())) {
+                    /**
+                     * Checking for a current case is a stop gap measure until a
+                     * different way of handling the closing of cases is worked
+                     * out. Currently, remote events may be received for a case
+                     * that is already closed.
+                     */
+                    try {
+                        Case.getCurrentCaseThrows();
+                        /**
+                         * Even with the check above, it is still possible that
+                         * the case will be closed in a different thread before
+                         * this code executes. If that happens, it is possible
+                         * for the event to have a null oldValue.
+                         */
+                        ModuleDataEvent eventData = (ModuleDataEvent) evt.getOldValue();
+                        if (null != eventData
+                                && eventData.getBlackboardArtifactType().getTypeID() == ARTIFACT_TYPE.TSK_ACCOUNT.getTypeID()) {
+                            accountTypeResults.update();
+                            reviewStatusBus.post(eventData);
+                        }
+                    } catch (NoCurrentCaseException notUsed) {
+                        // Case is closed, do nothing.
+                    }
+                } else if (eventType.equals(IngestManager.IngestJobEvent.COMPLETED.toString())
+                        || eventType.equals(IngestManager.IngestJobEvent.CANCELLED.toString())) {
+                    /**
+                     * Checking for a current case is a stop gap measure until a
+                     * different way of handling the closing of cases is worked
+                     * out. Currently, remote events may be received for a case
+                     * that is already closed.
+                     */
+                    try {
+                        Case.getCurrentCaseThrows();
+                        refresh(true);
+                    } catch (NoCurrentCaseException notUsed) {
+                        // Case is closed, do nothing.
+                    }
+                } else if (eventType.equals(Case.Events.CURRENT_CASE.toString())) {
+                    // case was closed. Remove listeners so that we don't get called with a stale case handle
+                    if (evt.getNewValue() == null) {
+                        removeNotify();
+                        skCase = null;
+                    }
+                }
+            }
+        };
+
+        @Subscribe
+        @Override
+        void handleReviewStatusChange(ReviewStatusChangeEvent event) {
+            refresh(true);
+        }
+
+        @Subscribe
+        @Override
+        void handleDataAdded(ModuleDataEvent event) {
+            refresh(true);
+        }
+
+        @Override
+        protected boolean createKeys(List<String> list) {
+            list.addAll(accountTypeResults.getTypes());
+            return true;
+        }
+        
+        /**
+         * Registers the given node with the reviewStatusBus and returns
+         * the node wrapped in an array.
+         * @param node      The node to be wrapped.
+         * @return          The array containing this node.
+         */
+        private Node[] getNodeArr(Node node) {
+            reviewStatusBus.register(node);
+            return new Node[]{node};
+        }
+
+        @Override
+        protected Node[] createNodesForKey(String acountTypeName) {
+
+            if (Account.Type.CREDIT_CARD.getTypeName().equals(acountTypeName)) {
+                return getNodeArr(new CreditCardNumberAccountTypeNode());
+            } else {
+
+                try {
+                    Account.Type accountType = skCase.getCommunicationsManager().getAccountType(acountTypeName);
+                    return getNodeArr(new DefaultAccountTypeNode(accountType));
+                } catch (TskCoreException ex) {
+                    LOGGER.log(Level.SEVERE, "Error getting display name for account type. ", ex);
+                }
+
+                return new Node[]{};
+            }
+        }
+
+        @Override
+        protected void removeNotify() {
+            IngestManager.getInstance().removeIngestJobEventListener(pcl);
+            IngestManager.getInstance().removeIngestModuleEventListener(pcl);
+            Case.removeEventTypeSubscriber(EnumSet.of(Case.Events.CURRENT_CASE), pcl);
+            super.removeNotify();
+        }
+
+        @Override
+        protected void addNotify() {
+            IngestManager.getInstance().addIngestJobEventListener(INGEST_JOB_EVENTS_OF_INTEREST, pcl);
+            IngestManager.getInstance().addIngestModuleEventListener(INGEST_MODULE_EVENTS_OF_INTEREST, pcl);
+            Case.addEventTypeSubscriber(EnumSet.of(Case.Events.CURRENT_CASE), pcl);
+            super.addNotify();
+            refresh(true);
+        }
+
+    }
+
+    final private class DefaultAccountFactory extends ObservingChildren<Long> {
+
+        private final Account.Type accountType;
+
+        private DefaultAccountFactory(Account.Type accountType) {
+            this.accountType = accountType;
+        }
+
+        private final PropertyChangeListener pcl = new PropertyChangeListener() {
+            @Override
+            public void propertyChange(PropertyChangeEvent evt) {
+                String eventType = evt.getPropertyName();
+                if (eventType.equals(IngestManager.IngestModuleEvent.DATA_ADDED.toString())) {
+                    /**
+                     * Checking for a current case is a stop gap measure until a
+                     * different way of handling the closing of cases is worked
+                     * out. Currently, remote events may be received for a case
+                     * that is already closed.
+                     */
+                    try {
+                        Case.getCurrentCaseThrows();
+                        /**
+                         * Even with the check above, it is still possible that
+                         * the case will be closed in a different thread before
+                         * this code executes. If that happens, it is possible
+                         * for the event to have a null oldValue.
+                         */
+                        ModuleDataEvent eventData = (ModuleDataEvent) evt.getOldValue();
+                        if (null != eventData
+                                && eventData.getBlackboardArtifactType().getTypeID() == ARTIFACT_TYPE.TSK_ACCOUNT.getTypeID()) {
+                            reviewStatusBus.post(eventData);
+                        }
+                    } catch (NoCurrentCaseException notUsed) {
+                        // Case is closed, do nothing.
+                    }
+                } else if (eventType.equals(IngestManager.IngestJobEvent.COMPLETED.toString())
+                        || eventType.equals(IngestManager.IngestJobEvent.CANCELLED.toString())) {
+                    /**
+                     * Checking for a current case is a stop gap measure until a
+                     * different way of handling the closing of cases is worked
+                     * out. Currently, remote events may be received for a case
+                     * that is already closed.
+                     */
+                    try {
+                        Case.getCurrentCaseThrows();
+                        refresh(true);
+
+                    } catch (NoCurrentCaseException notUsed) {
+                        // Case is closed, do nothing.
+                    }
+                } else if (eventType.equals(Case.Events.CURRENT_CASE.toString())) {
+                    // case was closed. Remove listeners so that we don't get called with a stale case handle
+                    if (evt.getNewValue() == null) {
+                        removeNotify();
+                        skCase = null;
+                    }
+                }
+            }
+        };
+
+        @Override
+        protected void addNotify() {
+            IngestManager.getInstance().addIngestJobEventListener(INGEST_JOB_EVENTS_OF_INTEREST, pcl);
+            IngestManager.getInstance().addIngestModuleEventListener(INGEST_MODULE_EVENTS_OF_INTEREST, pcl);
+            Case.addEventTypeSubscriber(EnumSet.of(Case.Events.CURRENT_CASE), pcl);
+            super.addNotify();
+        }
+
+        @Override
+        protected void removeNotify() {
+            IngestManager.getInstance().removeIngestJobEventListener(pcl);
+            IngestManager.getInstance().removeIngestModuleEventListener(pcl);
+            Case.removeEventTypeSubscriber(EnumSet.of(Case.Events.CURRENT_CASE), pcl);
+            super.removeNotify();
+        }
+
+        @Override
+        protected boolean createKeys(List<Long> list) {
+            String query
+                    = "SELECT blackboard_artifacts.artifact_id " //NON-NLS
+                    + " FROM blackboard_artifacts " //NON-NLS
+                    + "      JOIN blackboard_attributes ON blackboard_artifacts.artifact_id = blackboard_attributes.artifact_id " //NON-NLS
+                    + " WHERE blackboard_artifacts.artifact_type_id = " + BlackboardArtifact.ARTIFACT_TYPE.TSK_ACCOUNT.getTypeID() //NON-NLS
+                    + "     AND blackboard_attributes.attribute_type_id = " + BlackboardAttribute.ATTRIBUTE_TYPE.TSK_ACCOUNT_TYPE.getTypeID() //NON-NLS
+                    + "     AND blackboard_attributes.value_text = '" + accountType.getTypeName() + "'" //NON-NLS
+                    + getFilterByDataSourceClause()
+                    + getRejectedArtifactFilterClause(); //NON-NLS
+            try (SleuthkitCase.CaseDbQuery results = skCase.executeQuery(query);
+                    ResultSet rs = results.getResultSet();) {
+                while (rs.next()) {
+                    list.add(rs.getLong("artifact_id")); //NON-NLS
+                }
+            } catch (TskCoreException | SQLException ex) {
+                LOGGER.log(Level.SEVERE, "Error querying for account artifacts.", ex); //NON-NLS
+            }
+
+            return true;
+        }
+
+        @Override
+        protected Node[] createNodesForKey(Long t) {
+            try {
+                return new Node[]{new BlackboardArtifactNode(skCase.getBlackboardArtifact(t))};
+            } catch (TskCoreException ex) {
+                LOGGER.log(Level.SEVERE, "Error get black board artifact with id " + t, ex);
+                return new Node[0];
+            }
+        }
+
+        @Subscribe
+        @Override
+        void handleReviewStatusChange(ReviewStatusChangeEvent event) {
+            refresh(true);
+        }
+
+        @Subscribe
+        @Override
+        void handleDataAdded(ModuleDataEvent event) {
+            refresh(true);
         }
     }
 
@@ -355,65 +567,14 @@ final public class Accounts implements AutopsyVisitableItem {
      * no special behavior.
      */
     final public class DefaultAccountTypeNode extends DisplayableItemNode {
-
-        private final String accountTypeName;
-
-        final private class DefaultAccountFactory extends ObservingChildren<Long> {
-
-            private DefaultAccountFactory() {
-            }
-
-            @Override
-            protected Collection<Long> createKeys() {
-                List<Long> list = new ArrayList<>();
-                String query
-                        = "SELECT blackboard_artifacts.artifact_id " //NON-NLS
-                        + " FROM blackboard_artifacts " //NON-NLS
-                        + "      JOIN blackboard_attributes ON blackboard_artifacts.artifact_id = blackboard_attributes.artifact_id " //NON-NLS
-                        + " WHERE blackboard_artifacts.artifact_type_id = " + BlackboardArtifact.ARTIFACT_TYPE.TSK_ACCOUNT.getTypeID() //NON-NLS
-                        + "     AND blackboard_attributes.attribute_type_id = " + BlackboardAttribute.ATTRIBUTE_TYPE.TSK_ACCOUNT_TYPE.getTypeID() //NON-NLS
-                        + "     AND blackboard_attributes.value_text = '" + accountTypeName + "'" //NON-NLS
-                        + getRejectedArtifactFilterClause(); //NON-NLS
-                try (SleuthkitCase.CaseDbQuery results = skCase.executeQuery(query);
-                        ResultSet rs = results.getResultSet();) {
-                    while (rs.next()) {
-                        list.add(rs.getLong("artifact_id")); //NON-NLS
-                    }
-                } catch (TskCoreException | SQLException ex) {
-                    LOGGER.log(Level.SEVERE, "Error querying for account artifacts.", ex); //NON-NLS
-                }
-                return list;
-            }
-
-            @Override
-            protected Node[] createNodes(Long t) {
-                try {
-                    return new Node[]{new BlackboardArtifactNode(skCase.getBlackboardArtifact(t))};
-                } catch (TskCoreException ex) {
-                    LOGGER.log(Level.SEVERE, "Error get black board artifact with id " + t, ex);
-                    return new Node[0];
-                }
-            }
-
-            @Subscribe
-            @Override
-            void handleReviewStatusChange(ReviewStatusChangeEvent event) {
-                refreshKeys();
-            }
-
-            @Subscribe
-            @Override
-            void handleDataAdded(ModuleDataEvent event) {
-                refreshKeys();
-            }
-        }
-
-        private DefaultAccountTypeNode(String accountTypeName) {
-            super(Children.LEAF);
-            this.accountTypeName = accountTypeName;
-            setChildren(Children.createLazy(DefaultAccountFactory::new));
-            setName(accountTypeName);
-            this.setIconBaseWithExtension("org/sleuthkit/autopsy/images/credit-cards.png");   //NON-NLS
+        private final Account.Type accountType;
+        
+        private DefaultAccountTypeNode(Account.Type accountType) {
+            super(Children.create(new DefaultAccountFactory(accountType), true), Lookups.singleton(accountType));
+            this.accountType = accountType;
+            String iconPath = getIconFilePath(accountType);
+            this.setIconBaseWithExtension(iconPath != null && iconPath.charAt(0) == '/' ? iconPath.substring(1) : iconPath);   //NON-NLS
+            updateName();
         }
 
         @Override
@@ -422,13 +583,31 @@ final public class Accounts implements AutopsyVisitableItem {
         }
 
         @Override
-        public <T> T accept(DisplayableItemNodeVisitor<T> v) {
-            return v.visit(this);
+        public <T> T accept(DisplayableItemNodeVisitor<T> visitor) {
+            return visitor.visit(this);
         }
 
         @Override
         public String getItemType() {
             return getClass().getName();
+        }
+        
+        
+        @Subscribe
+        void handleReviewStatusChange(ReviewStatusChangeEvent event) {
+            updateName();
+        }
+
+        @Subscribe
+        void handleDataAdded(ModuleDataEvent event) {
+            updateName();
+        }
+        
+        /**
+         * Gets the latest counts for the account type and then updates the name.
+         */
+        public void updateName() {
+            setName(String.format("%s (%d)", accountType.getDisplayName(), accountTypeResults.getCount(accountType.getTypeName())));
         }
     }
 
@@ -440,6 +619,111 @@ final public class Accounts implements AutopsyVisitableItem {
         BY_BIN;
     }
 
+    final private class ViewModeFactory extends ObservingChildren<CreditCardViewMode> {
+
+        private final PropertyChangeListener pcl = new PropertyChangeListener() {
+            @Override
+            public void propertyChange(PropertyChangeEvent evt) {
+                String eventType = evt.getPropertyName();
+                if (eventType.equals(IngestManager.IngestModuleEvent.DATA_ADDED.toString())) {
+                    /**
+                     * Checking for a current case is a stop gap measure until a
+                     * different way of handling the closing of cases is worked
+                     * out. Currently, remote events may be received for a case
+                     * that is already closed.
+                     */
+                    try {
+                        Case.getCurrentCaseThrows();
+                        /**
+                         * Even with the check above, it is still possible that
+                         * the case will be closed in a different thread before
+                         * this code executes. If that happens, it is possible
+                         * for the event to have a null oldValue.
+                         */
+                        ModuleDataEvent eventData = (ModuleDataEvent) evt.getOldValue();
+                        if (null != eventData
+                                && eventData.getBlackboardArtifactType().getTypeID() == ARTIFACT_TYPE.TSK_ACCOUNT.getTypeID()) {
+                            reviewStatusBus.post(eventData);
+                        }
+                    } catch (NoCurrentCaseException notUsed) {
+                        // Case is closed, do nothing.
+                    }
+                } else if (eventType.equals(IngestManager.IngestJobEvent.COMPLETED.toString())
+                        || eventType.equals(IngestManager.IngestJobEvent.CANCELLED.toString())) {
+                    /**
+                     * Checking for a current case is a stop gap measure until a
+                     * different way of handling the closing of cases is worked
+                     * out. Currently, remote events may be received for a case
+                     * that is already closed.
+                     */
+                    try {
+                        Case.getCurrentCaseThrows();
+                        refresh(true);
+
+                    } catch (NoCurrentCaseException notUsed) {
+                        // Case is closed, do nothing.
+                    }
+                } else if (eventType.equals(Case.Events.CURRENT_CASE.toString())) {
+                    // case was closed. Remove listeners so that we don't get called with a stale case handle
+                    if (evt.getNewValue() == null) {
+                        removeNotify();
+                        skCase = null;
+                    }
+                }
+            }
+        };
+
+        @Subscribe
+        @Override
+        void handleReviewStatusChange(ReviewStatusChangeEvent event) {
+            refresh(true);
+        }
+
+        @Subscribe
+        @Override
+        void handleDataAdded(ModuleDataEvent event) {
+            refresh(true);
+        }
+
+        @Override
+        protected void addNotify() {
+            IngestManager.getInstance().addIngestJobEventListener(INGEST_JOB_EVENTS_OF_INTEREST, pcl);
+            IngestManager.getInstance().addIngestModuleEventListener(INGEST_MODULE_EVENTS_OF_INTEREST, pcl);
+            Case.addEventTypeSubscriber(EnumSet.of(Case.Events.CURRENT_CASE), pcl);
+            super.addNotify();
+        }
+
+        @Override
+        protected void removeNotify() {
+            IngestManager.getInstance().removeIngestJobEventListener(pcl);
+            IngestManager.getInstance().removeIngestModuleEventListener(pcl);
+            Case.removeEventTypeSubscriber(EnumSet.of(Case.Events.CURRENT_CASE), pcl);
+            super.removeNotify();
+        }
+
+        /**
+         *
+         */
+        @Override
+        protected boolean createKeys(List<CreditCardViewMode> list) {
+            list.addAll(Arrays.asList(CreditCardViewMode.values()));
+
+            return true;
+        }
+
+        @Override
+        protected Node[] createNodesForKey(CreditCardViewMode key) {
+            switch (key) {
+                case BY_BIN:
+                    return new Node[]{new ByBINNode()};
+                case BY_FILE:
+                    return new Node[]{new ByFileNode()};
+                default:
+                    return new Node[0];
+            }
+        }
+    }
+
     /**
      * Node for the Credit Card account type. *
      */
@@ -449,43 +733,27 @@ final public class Accounts implements AutopsyVisitableItem {
          * ChildFactory that makes nodes for the different account organizations
          * (by file, by BIN)
          */
-        final private class ViewModeFactory extends ObservingChildren<CreditCardViewMode> {
-
-            @Override
-            void handleReviewStatusChange(ReviewStatusChangeEvent event) {
-            }
-
-            @Override
-            void handleDataAdded(ModuleDataEvent event) {
-            }
-
-            /**
-             *
-             */
-            @Override
-            protected List<CreditCardViewMode> createKeys() {
-                return Arrays.asList(CreditCardViewMode.values());
-
-            }
-
-            @Override
-            protected Node[] createNodes(CreditCardViewMode key) {
-                switch (key) {
-                    case BY_BIN:
-                        return new Node[]{new ByBINNode()};
-                    case BY_FILE:
-                        return new Node[]{new ByFileNode()};
-                    default:
-                        return new Node[0];
-                }
-            }
-        }
-
         private CreditCardNumberAccountTypeNode() {
-            super(Children.LEAF);
-            setChildren(new ViewModeFactory());
+            super(Children.create(new ViewModeFactory(), true), Lookups.singleton(Account.Type.CREDIT_CARD.getDisplayName()));
             setName(Account.Type.CREDIT_CARD.getDisplayName());
             this.setIconBaseWithExtension("org/sleuthkit/autopsy/images/credit-cards.png");   //NON-NLS
+        }
+        
+        /**
+         * Gets the latest counts for the account type and then updates the name.
+         */
+        public void updateName() {
+            setName(String.format("%s (%d)", Account.Type.CREDIT_CARD.getDisplayName(), accountTypeResults.getCount(Account.Type.CREDIT_CARD.getTypeName())));
+        }
+        
+        @Subscribe
+        void handleReviewStatusChange(ReviewStatusChangeEvent event) {
+            updateName();
+        }
+
+        @Subscribe
+        void handleDataAdded(ModuleDataEvent event) {
+            updateName();
         }
 
         @Override
@@ -494,13 +762,154 @@ final public class Accounts implements AutopsyVisitableItem {
         }
 
         @Override
-        public <T> T accept(DisplayableItemNodeVisitor<T> v) {
-            return v.visit(this);
+        public <T> T accept(DisplayableItemNodeVisitor<T> visitor) {
+            return visitor.visit(this);
         }
 
         @Override
         public String getItemType() {
             return getClass().getName();
+        }
+    }
+
+    final private class FileWithCCNFactory extends ObservingChildren<FileWithCCN> {
+
+        private final PropertyChangeListener pcl = new PropertyChangeListener() {
+            @Override
+            public void propertyChange(PropertyChangeEvent evt) {
+                String eventType = evt.getPropertyName();
+                if (eventType.equals(IngestManager.IngestModuleEvent.DATA_ADDED.toString())) {
+                    /**
+                     * Checking for a current case is a stop gap measure until a
+                     * different way of handling the closing of cases is worked
+                     * out. Currently, remote events may be received for a case
+                     * that is already closed.
+                     */
+                    try {
+                        Case.getCurrentCaseThrows();
+                        /**
+                         * Even with the check above, it is still possible that
+                         * the case will be closed in a different thread before
+                         * this code executes. If that happens, it is possible
+                         * for the event to have a null oldValue.
+                         */
+                        ModuleDataEvent eventData = (ModuleDataEvent) evt.getOldValue();
+                        if (null != eventData
+                                && eventData.getBlackboardArtifactType().getTypeID() == ARTIFACT_TYPE.TSK_ACCOUNT.getTypeID()) {
+                            reviewStatusBus.post(eventData);
+                        }
+                    } catch (NoCurrentCaseException notUsed) {
+                        // Case is closed, do nothing.
+                    }
+                } else if (eventType.equals(IngestManager.IngestJobEvent.COMPLETED.toString())
+                        || eventType.equals(IngestManager.IngestJobEvent.CANCELLED.toString())) {
+                    /**
+                     * Checking for a current case is a stop gap measure until a
+                     * different way of handling the closing of cases is worked
+                     * out. Currently, remote events may be received for a case
+                     * that is already closed.
+                     */
+                    try {
+                        Case.getCurrentCaseThrows();
+                        refresh(true);
+
+                    } catch (NoCurrentCaseException notUsed) {
+                        // Case is closed, do nothing.
+                    }
+                } else if (eventType.equals(Case.Events.CURRENT_CASE.toString())) {
+                    // case was closed. Remove listeners so that we don't get called with a stale case handle
+                    if (evt.getNewValue() == null) {
+                        removeNotify();
+                        skCase = null;
+                    }
+                }
+            }
+        };
+
+        @Override
+        protected void addNotify() {
+            IngestManager.getInstance().addIngestJobEventListener(INGEST_JOB_EVENTS_OF_INTEREST, pcl);
+            IngestManager.getInstance().addIngestModuleEventListener(INGEST_MODULE_EVENTS_OF_INTEREST, pcl);
+            Case.addEventTypeSubscriber(EnumSet.of(Case.Events.CURRENT_CASE), pcl);
+            super.addNotify();
+        }
+
+        @Override
+        protected void removeNotify() {
+            IngestManager.getInstance().removeIngestJobEventListener(pcl);
+            IngestManager.getInstance().removeIngestModuleEventListener(pcl);
+            Case.removeEventTypeSubscriber(EnumSet.of(Case.Events.CURRENT_CASE), pcl);
+            super.removeNotify();
+        }
+
+        @Subscribe
+        @Override
+        void handleReviewStatusChange(ReviewStatusChangeEvent event) {
+            refresh(true);
+        }
+
+        @Subscribe
+        @Override
+        void handleDataAdded(ModuleDataEvent event) {
+            refresh(true);
+        }
+
+        @Override
+        protected boolean createKeys(List<FileWithCCN> list) {
+            String query
+                    = "SELECT blackboard_artifacts.obj_id," //NON-NLS
+                    + "      solr_attribute.value_text AS solr_document_id, "; //NON-NLS
+            if (skCase.getDatabaseType().equals(DbType.POSTGRESQL)) {
+                query += "      string_agg(blackboard_artifacts.artifact_id::character varying, ',') AS artifact_IDs, " //NON-NLS
+                        + "      string_agg(blackboard_artifacts.review_status_id::character varying, ',') AS review_status_ids, ";
+            } else {
+                query += "      GROUP_CONCAT(blackboard_artifacts.artifact_id) AS artifact_IDs, " //NON-NLS
+                        + "      GROUP_CONCAT(blackboard_artifacts.review_status_id) AS review_status_ids, ";
+            }
+            query += "      COUNT( blackboard_artifacts.artifact_id) AS hits  " //NON-NLS
+                    + " FROM blackboard_artifacts " //NON-NLS
+                    + " LEFT JOIN blackboard_attributes as solr_attribute ON blackboard_artifacts.artifact_id = solr_attribute.artifact_id " //NON-NLS
+                    + "                                AND solr_attribute.attribute_type_id = " + BlackboardAttribute.ATTRIBUTE_TYPE.TSK_KEYWORD_SEARCH_DOCUMENT_ID.getTypeID() //NON-NLS
+                    + " LEFT JOIN blackboard_attributes as account_type ON blackboard_artifacts.artifact_id = account_type.artifact_id " //NON-NLS
+                    + "                                AND account_type.attribute_type_id = " + BlackboardAttribute.ATTRIBUTE_TYPE.TSK_ACCOUNT_TYPE.getTypeID() //NON-NLS
+                    + "                                AND account_type.value_text = '" + Account.Type.CREDIT_CARD.getTypeName() + "'" //NON-NLS
+                    + " WHERE blackboard_artifacts.artifact_type_id = " + BlackboardArtifact.ARTIFACT_TYPE.TSK_ACCOUNT.getTypeID() //NON-NLS
+                    + getFilterByDataSourceClause()
+                    + getRejectedArtifactFilterClause()
+                    + " GROUP BY blackboard_artifacts.obj_id, solr_document_id " //NON-NLS
+                    + " ORDER BY hits DESC ";  //NON-NLS
+            try (SleuthkitCase.CaseDbQuery results = skCase.executeQuery(query);
+                    ResultSet resultSet = results.getResultSet();) {
+                while (resultSet.next()) {
+                    list.add(new FileWithCCN(
+                            resultSet.getLong("obj_id"), //NON-NLS
+                            resultSet.getString("solr_document_id"), //NON-NLS
+                            unGroupConcat(resultSet.getString("artifact_IDs"), Long::valueOf), //NON-NLS
+                            resultSet.getLong("hits"), //NON-NLS
+                            new HashSet<>(unGroupConcat(resultSet.getString("review_status_ids"), reviewStatusID -> BlackboardArtifact.ReviewStatus.withID(Integer.valueOf(reviewStatusID))))));  //NON-NLS
+                }
+            } catch (TskCoreException | SQLException ex) {
+                LOGGER.log(Level.SEVERE, "Error querying for files with ccn hits.", ex); //NON-NLS
+
+            }
+            return true;
+        }
+
+        @Override
+        protected Node[] createNodesForKey(FileWithCCN key) {
+            //add all account artifacts for the file and the file itself to the lookup
+            try {
+                List<Object> lookupContents = new ArrayList<>();
+                for (long artId : key.artifactIDs) {
+                    lookupContents.add(skCase.getBlackboardArtifact(artId));
+                }
+                AbstractFile abstractFileById = skCase.getAbstractFileById(key.getObjID());
+                lookupContents.add(abstractFileById);
+                return new Node[]{new FileWithCCNNode(key, abstractFileById, lookupContents.toArray())};
+            } catch (TskCoreException ex) {
+                LOGGER.log(Level.SEVERE, "Error getting content for file with ccn hits.", ex); //NON-NLS
+                return new Node[0];
+            }
         }
     }
 
@@ -513,82 +922,8 @@ final public class Accounts implements AutopsyVisitableItem {
         /**
          * Factory for the children of the ByFiles Node.
          */
-        final private class FileWithCCNFactory extends ObservingChildren<FileWithCCN> {
-
-            @Subscribe
-            @Override
-            void handleReviewStatusChange(ReviewStatusChangeEvent event) {
-                refreshKeys();
-            }
-
-            @Subscribe
-            @Override
-            void handleDataAdded(ModuleDataEvent event) {
-                refreshKeys();
-            }
-
-            @Override
-            protected List<FileWithCCN> createKeys() {
-                List<FileWithCCN> list = new ArrayList<>();
-                String query
-                        = "SELECT blackboard_artifacts.obj_id," //NON-NLS
-                        + "      solr_attribute.value_text AS solr_document_id, "; //NON-NLS
-                if(skCase.getDatabaseType().equals(DbType.POSTGRESQL)){
-                    query += "      string_agg(blackboard_artifacts.artifact_id::character varying, ',') AS artifact_IDs, " //NON-NLS
-                           + "      string_agg(blackboard_artifacts.review_status_id::character varying, ',') AS review_status_ids, ";
-                } else {
-                    query += "      GROUP_CONCAT(blackboard_artifacts.artifact_id) AS artifact_IDs, " //NON-NLS
-                           + "      GROUP_CONCAT(blackboard_artifacts.review_status_id) AS review_status_ids, ";
-                }
-                query +=  "      COUNT( blackboard_artifacts.artifact_id) AS hits  " //NON-NLS
-                        + " FROM blackboard_artifacts " //NON-NLS
-                        + " LEFT JOIN blackboard_attributes as solr_attribute ON blackboard_artifacts.artifact_id = solr_attribute.artifact_id " //NON-NLS
-                        + "                                AND solr_attribute.attribute_type_id = " + BlackboardAttribute.ATTRIBUTE_TYPE.TSK_KEYWORD_SEARCH_DOCUMENT_ID.getTypeID() //NON-NLS
-                        + " LEFT JOIN blackboard_attributes as account_type ON blackboard_artifacts.artifact_id = account_type.artifact_id " //NON-NLS
-                        + "                                AND account_type.attribute_type_id = " + BlackboardAttribute.ATTRIBUTE_TYPE.TSK_ACCOUNT_TYPE.getTypeID() //NON-NLS
-                        + "                                AND account_type.value_text = '" + Account.Type.CREDIT_CARD.name() + "'" //NON-NLS
-                        + " WHERE blackboard_artifacts.artifact_type_id = " + BlackboardArtifact.ARTIFACT_TYPE.TSK_ACCOUNT.getTypeID() //NON-NLS
-                        + getRejectedArtifactFilterClause()
-                        + " GROUP BY blackboard_artifacts.obj_id, solr_document_id " //NON-NLS
-                        + " ORDER BY hits DESC ";  //NON-NLS
-                try (SleuthkitCase.CaseDbQuery results = skCase.executeQuery(query);
-                        ResultSet rs = results.getResultSet();) {
-                    while (rs.next()) {
-                        list.add(new FileWithCCN(
-                                rs.getLong("obj_id"), //NON-NLS
-                                rs.getString("solr_document_id"), //NON-NLS
-                                unGroupConcat(rs.getString("artifact_IDs"), Long::valueOf), //NON-NLS
-                                rs.getLong("hits"), //NON-NLS
-                                new HashSet<>(unGroupConcat(rs.getString("review_status_ids"), id -> BlackboardArtifact.ReviewStatus.withID(Integer.valueOf(id))))));  //NON-NLS
-                    }
-                } catch (TskCoreException | SQLException ex) {
-                    LOGGER.log(Level.SEVERE, "Error querying for files with ccn hits.", ex); //NON-NLS
-
-                }
-                return list;
-            }
-
-            @Override
-            protected Node[] createNodes(FileWithCCN key) {
-                //add all account artifacts for the file and the file itself to the lookup
-                try {
-                    List<Object> lookupContents = new ArrayList<>();
-                    for (long artId : key.artifactIDs) {
-                        lookupContents.add(skCase.getBlackboardArtifact(artId));
-                    }
-                    AbstractFile abstractFileById = skCase.getAbstractFileById(key.getObjID());
-                    lookupContents.add(abstractFileById);
-                    return new Node[]{new FileWithCCNNode(key, abstractFileById, lookupContents.toArray())};
-                } catch (TskCoreException ex) {
-                    LOGGER.log(Level.SEVERE, "Error getting content for file with ccn hits.", ex); //NON-NLS
-                    return new Node[0];
-                }
-            }
-        }
-
         private ByFileNode() {
-            super(Children.LEAF);
-            setChildren(Children.createLazy(FileWithCCNFactory::new));
+            super(Children.create(new FileWithCCNFactory(), true), Lookups.singleton("By File"));
             setName("By File");   //NON-NLS
             updateDisplayName();
             this.setIconBaseWithExtension("org/sleuthkit/autopsy/images/file-icon.png");   //NON-NLS
@@ -606,17 +941,18 @@ final public class Accounts implements AutopsyVisitableItem {
                     + "                                AND solr_attribute.attribute_type_id = " + BlackboardAttribute.ATTRIBUTE_TYPE.TSK_KEYWORD_SEARCH_DOCUMENT_ID.getTypeID() //NON-NLS
                     + " LEFT JOIN blackboard_attributes as account_type ON blackboard_artifacts.artifact_id = account_type.artifact_id " //NON-NLS
                     + "                                AND account_type.attribute_type_id = " + BlackboardAttribute.ATTRIBUTE_TYPE.TSK_ACCOUNT_TYPE.getTypeID() //NON-NLS
-                    + "                                AND account_type.value_text = '" + Account.Type.CREDIT_CARD.name() + "'" //NON-NLS
+                    + "                                AND account_type.value_text = '" + Account.Type.CREDIT_CARD.getTypeName() + "'" //NON-NLS
                     + " WHERE blackboard_artifacts.artifact_type_id = " + BlackboardArtifact.ARTIFACT_TYPE.TSK_ACCOUNT.getTypeID() //NON-NLS
+                    + getFilterByDataSourceClause()
                     + getRejectedArtifactFilterClause()
                     + " GROUP BY blackboard_artifacts.obj_id, solr_attribute.value_text ) AS foo";
             try (SleuthkitCase.CaseDbQuery results = skCase.executeQuery(query);
-                    ResultSet rs = results.getResultSet();) {
-                while (rs.next()) {
-                    if(skCase.getDatabaseType().equals(DbType.POSTGRESQL)){
-                        setDisplayName(Bundle.Accounts_ByFileNode_displayName(rs.getLong("count")));
+                    ResultSet resultSet = results.getResultSet();) {
+                while (resultSet.next()) {
+                    if (skCase.getDatabaseType().equals(DbType.POSTGRESQL)) {
+                        setDisplayName(Bundle.Accounts_ByFileNode_displayName(resultSet.getLong("count")));
                     } else {
-                        setDisplayName(Bundle.Accounts_ByFileNode_displayName(rs.getLong("count(*)")));
+                        setDisplayName(Bundle.Accounts_ByFileNode_displayName(resultSet.getLong("count(*)")));
                     }
                 }
             } catch (TskCoreException | SQLException ex) {
@@ -631,8 +967,8 @@ final public class Accounts implements AutopsyVisitableItem {
         }
 
         @Override
-        public <T> T accept(DisplayableItemNodeVisitor<T> v) {
-            return v.visit(this);
+        public <T> T accept(DisplayableItemNodeVisitor<T> visitor) {
+            return visitor.visit(this);
         }
 
         @Override
@@ -651,6 +987,138 @@ final public class Accounts implements AutopsyVisitableItem {
         }
     }
 
+    final private class BINFactory extends ObservingChildren<BinResult> {
+
+        private final PropertyChangeListener pcl = new PropertyChangeListener() {
+            @Override
+            public void propertyChange(PropertyChangeEvent evt) {
+                String eventType = evt.getPropertyName();
+                if (eventType.equals(IngestManager.IngestModuleEvent.DATA_ADDED.toString())) {
+                    /**
+                     * Checking for a current case is a stop gap measure until a
+                     * different way of handling the closing of cases is worked
+                     * out. Currently, remote events may be received for a case
+                     * that is already closed.
+                     */
+                    try {
+                        Case.getCurrentCaseThrows();
+                        /**
+                         * Even with the check above, it is still possible that
+                         * the case will be closed in a different thread before
+                         * this code executes. If that happens, it is possible
+                         * for the event to have a null oldValue.
+                         */
+                        ModuleDataEvent eventData = (ModuleDataEvent) evt.getOldValue();
+                        if (null != eventData
+                                && eventData.getBlackboardArtifactType().getTypeID() == ARTIFACT_TYPE.TSK_ACCOUNT.getTypeID()) {
+                            reviewStatusBus.post(eventData);
+                        }
+                    } catch (NoCurrentCaseException notUsed) { //NOPMD empy catch clause
+                        // Case is closed, do nothing.
+                    }
+                } else if (eventType.equals(IngestManager.IngestJobEvent.COMPLETED.toString())
+                        || eventType.equals(IngestManager.IngestJobEvent.CANCELLED.toString())) {
+                    /**
+                     * Checking for a current case is a stop gap measure until a
+                     * different way of handling the closing of cases is worked
+                     * out. Currently, remote events may be received for a case
+                     * that is already closed.
+                     */
+                    try {
+                        Case.getCurrentCaseThrows();
+
+                        refresh(true);
+                    } catch (NoCurrentCaseException notUsed) { //NOPMD empy catch clause
+                        // Case is closed, do nothing.
+                    }
+                } else if (eventType.equals(Case.Events.CURRENT_CASE.toString())
+                        && (evt.getNewValue() == null)) {
+                    // case was closed. Remove listeners so that we don't get called with a stale case handle
+                    removeNotify();
+                    skCase = null;
+                }
+            }
+        };
+
+        @Override
+        protected void addNotify() {
+            IngestManager.getInstance().addIngestJobEventListener(INGEST_JOB_EVENTS_OF_INTEREST, pcl);
+            IngestManager.getInstance().addIngestModuleEventListener(INGEST_MODULE_EVENTS_OF_INTEREST, pcl);
+            Case.addEventTypeSubscriber(EnumSet.of(Case.Events.CURRENT_CASE), pcl);
+            super.addNotify();
+        }
+
+        @Override
+        protected void removeNotify() {
+            IngestManager.getInstance().removeIngestJobEventListener(pcl);
+            IngestManager.getInstance().removeIngestModuleEventListener(pcl);
+            Case.removeEventTypeSubscriber(EnumSet.of(Case.Events.CURRENT_CASE), pcl);
+            super.removeNotify();
+        }
+
+        @Subscribe
+        @Override
+        void handleReviewStatusChange(ReviewStatusChangeEvent event) {
+            refresh(true);
+        }
+
+        @Subscribe
+        @Override
+        void handleDataAdded(ModuleDataEvent event) {
+            refresh(true);
+        }
+
+        @Override
+        protected boolean createKeys(List<BinResult> list) {
+
+            RangeMap<Integer, BinResult> binRanges = TreeRangeMap.create();
+
+            String query
+                    = "SELECT SUBSTR(blackboard_attributes.value_text,1,8) AS BIN, " //NON-NLS
+                    + "     COUNT(blackboard_artifacts.artifact_id) AS count " //NON-NLS
+                    + " FROM blackboard_artifacts " //NON-NLS
+                    + "      JOIN blackboard_attributes ON blackboard_artifacts.artifact_id = blackboard_attributes.artifact_id" //NON-NLS
+                    + " WHERE blackboard_artifacts.artifact_type_id = " + BlackboardArtifact.ARTIFACT_TYPE.TSK_ACCOUNT.getTypeID() //NON-NLS
+                    + "     AND blackboard_attributes.attribute_type_id = " + BlackboardAttribute.ATTRIBUTE_TYPE.TSK_CARD_NUMBER.getTypeID() //NON-NLS
+                    + getFilterByDataSourceClause()
+                    + getRejectedArtifactFilterClause()
+                    + " GROUP BY BIN " //NON-NLS
+                    + " ORDER BY BIN "; //NON-NLS
+            try (SleuthkitCase.CaseDbQuery results = skCase.executeQuery(query);
+                    ResultSet resultSet = results.getResultSet();) {
+                //sort all te individual bins in to the ranges
+                while (resultSet.next()) {
+                    final Integer bin = Integer.valueOf(resultSet.getString("BIN"));
+                    long count = resultSet.getLong("count");
+
+                    BINRange binRange = (BINRange) CreditCards.getBINInfo(bin);
+                    BinResult previousResult = binRanges.get(bin);
+
+                    if (previousResult != null) {
+                        binRanges.remove(Range.closed(previousResult.getBINStart(), previousResult.getBINEnd()));
+                        count += previousResult.getCount();
+                    }
+
+                    if (binRange == null) {
+                        binRanges.put(Range.closed(bin, bin), new BinResult(count, bin, bin));
+                    } else {
+                        binRanges.put(Range.closed(binRange.getBINstart(), binRange.getBINend()), new BinResult(count, binRange));
+                    }
+                }
+                binRanges.asMapOfRanges().values().forEach(list::add);
+            } catch (TskCoreException | SQLException ex) {
+                LOGGER.log(Level.SEVERE, "Error querying for BINs.", ex); //NON-NLS
+            }
+
+            return true;
+        }
+
+        @Override
+        protected Node[] createNodesForKey(BinResult key) {
+            return new Node[]{new BINNode(key)};
+        }
+    }
+
     /**
      * Node that is the root of the "By BIN" accounts tree. Its children are
      * BINNodes.
@@ -660,75 +1128,10 @@ final public class Accounts implements AutopsyVisitableItem {
         /**
          * Factory that generates the children of the ByBin node.
          */
-        final private class BINFactory extends ObservingChildren<BinResult> {
-
-            @Subscribe
-            @Override
-            void handleReviewStatusChange(ReviewStatusChangeEvent event) {
-                refreshKeys();
-            }
-
-            @Subscribe
-            @Override
-            void handleDataAdded(ModuleDataEvent event) {
-                refreshKeys();
-            }
-
-            @Override
-            protected List<BinResult> createKeys() {
-                List<BinResult> list = new ArrayList<>();
-
-                RangeMap<Integer, BinResult> binRanges = TreeRangeMap.create();
-
-                String query
-                        = "SELECT SUBSTR(blackboard_attributes.value_text,1,8) AS BIN, " //NON-NLS
-                        + "     COUNT(blackboard_artifacts.artifact_id) AS count " //NON-NLS
-                        + " FROM blackboard_artifacts " //NON-NLS
-                        + "      JOIN blackboard_attributes ON blackboard_artifacts.artifact_id = blackboard_attributes.artifact_id" //NON-NLS
-                        + " WHERE blackboard_artifacts.artifact_type_id = " + BlackboardArtifact.ARTIFACT_TYPE.TSK_ACCOUNT.getTypeID() //NON-NLS
-                        + "     AND blackboard_attributes.attribute_type_id = " + BlackboardAttribute.ATTRIBUTE_TYPE.TSK_CARD_NUMBER.getTypeID() //NON-NLS
-                        + getRejectedArtifactFilterClause()
-                        + " GROUP BY BIN " //NON-NLS
-                        + " ORDER BY BIN "; //NON-NLS
-                try (SleuthkitCase.CaseDbQuery results = skCase.executeQuery(query)) {
-                    ResultSet resultSet = results.getResultSet();
-                    //sort all te individual bins in to the ranges
-                    while (resultSet.next()) {
-                        final Integer bin = Integer.valueOf(resultSet.getString("BIN"));
-                        long count = resultSet.getLong("count");
-
-                        BINRange binRange = (BINRange) CreditCards.getBINInfo(bin);
-                        BinResult previousResult = binRanges.get(bin);
-
-                        if (previousResult != null) {
-                            binRanges.remove(Range.closed(previousResult.getBINStart(), previousResult.getBINEnd()));
-                            count += previousResult.getCount();
-                        }
-
-                        if (binRange != null) {
-                            binRanges.put(Range.closed(binRange.getBINstart(), binRange.getBINend()), new BinResult(count, binRange));
-                        } else {
-                            binRanges.put(Range.closed(bin, bin), new BinResult(count, bin, bin));
-                        }
-                    }
-                    binRanges.asMapOfRanges().values().forEach(list::add);
-                } catch (TskCoreException | SQLException ex) {
-                    LOGGER.log(Level.SEVERE, "Error querying for BINs.", ex); //NON-NLS
-
-                }
-                return list;
-            }
-
-            @Override
-            protected Node[] createNodes(BinResult key) {
-                return new Node[]{new BINNode(key)};
-            }
-        }
-
+        @NbBundle.Messages("Accounts.ByBINNode.name=By BIN")
         private ByBINNode() {
-            super(Children.LEAF);
-            setChildren(Children.createLazy(BINFactory::new));
-            setName("By BIN");  //NON-NLS
+            super(Children.create(new BINFactory(), true), Lookups.singleton(Bundle.Accounts_ByBINNode_name()));
+            setName(Bundle.Accounts_ByBINNode_name());  //NON-NLS
             updateDisplayName();
             this.setIconBaseWithExtension("org/sleuthkit/autopsy/images/bank.png");   //NON-NLS
             reviewStatusBus.register(this);
@@ -744,9 +1147,10 @@ final public class Accounts implements AutopsyVisitableItem {
                     + "      JOIN blackboard_attributes ON blackboard_artifacts.artifact_id = blackboard_attributes.artifact_id" //NON-NLS
                     + " WHERE blackboard_artifacts.artifact_type_id = " + BlackboardArtifact.ARTIFACT_TYPE.TSK_ACCOUNT.getTypeID() //NON-NLS
                     + "     AND blackboard_attributes.attribute_type_id = " + BlackboardAttribute.ATTRIBUTE_TYPE.TSK_CARD_NUMBER.getTypeID() //NON-NLS
+                    + getFilterByDataSourceClause()
                     + getRejectedArtifactFilterClause(); //NON-NLS
-            try (SleuthkitCase.CaseDbQuery results = skCase.executeQuery(query)) {
-                ResultSet resultSet = results.getResultSet();
+            try (SleuthkitCase.CaseDbQuery results = skCase.executeQuery(query);
+                    ResultSet resultSet = results.getResultSet();) {
                 while (resultSet.next()) {
                     setDisplayName(Bundle.Accounts_ByBINNode_displayName(resultSet.getLong("BINs")));
                 }
@@ -761,8 +1165,8 @@ final public class Accounts implements AutopsyVisitableItem {
         }
 
         @Override
-        public <T> T accept(DisplayableItemNodeVisitor<T> v) {
-            return v.visit(this);
+        public <T> T accept(DisplayableItemNodeVisitor<T> visitor) {
+            return visitor.visit(this);
         }
 
         @Override
@@ -868,7 +1272,7 @@ final public class Accounts implements AutopsyVisitableItem {
          * @return the artifact ids of the account artifacts from this file.
          */
         public List<Long> getArtifactIDs() {
-            return artifactIDs;
+            return Collections.unmodifiableList(artifactIDs);
         }
 
         /**
@@ -886,7 +1290,7 @@ final public class Accounts implements AutopsyVisitableItem {
          * @return the status(s) of the account artifacts from this file.
          */
         public Set<BlackboardArtifact.ReviewStatus> getStatuses() {
-            return statuses;
+            return Collections.unmodifiableSet(statuses);
         }
     }
 
@@ -909,8 +1313,8 @@ final public class Accounts implements AutopsyVisitableItem {
     static <X> List<X> unGroupConcat(String groupConcat, Function<String, X> mapper) {
         return StringUtils.isBlank(groupConcat) ? Collections.emptyList()
                 : Stream.of(groupConcat.split(",")) //NON-NLS
-                .map(mapper::apply)
-                .collect(Collectors.toList());
+                        .map(mapper::apply)
+                        .collect(Collectors.toList());
     }
 
     /**
@@ -950,8 +1354,8 @@ final public class Accounts implements AutopsyVisitableItem {
         }
 
         @Override
-        public <T> T accept(DisplayableItemNodeVisitor<T> v) {
-            return v.visit(this);
+        public <T> T accept(DisplayableItemNodeVisitor<T> visitor) {
+            return visitor.visit(this);
         }
 
         @Override
@@ -966,29 +1370,29 @@ final public class Accounts implements AutopsyVisitableItem {
             "Accounts.FileWithCCNNode.statusProperty.displayName=Status",
             "Accounts.FileWithCCNNode.noDescription=no description"})
         protected Sheet createSheet() {
-            Sheet s = super.createSheet();
-            Sheet.Set ss = s.get(Sheet.PROPERTIES);
-            if (ss == null) {
-                ss = Sheet.createPropertiesSet();
-                s.put(ss);
+            Sheet sheet = super.createSheet();
+            Sheet.Set propSet = sheet.get(Sheet.PROPERTIES);
+            if (propSet == null) {
+                propSet = Sheet.createPropertiesSet();
+                sheet.put(propSet);
             }
 
-            ss.put(new NodeProperty<>(Bundle.Accounts_FileWithCCNNode_nameProperty_displayName(),
+            propSet.put(new NodeProperty<>(Bundle.Accounts_FileWithCCNNode_nameProperty_displayName(),
                     Bundle.Accounts_FileWithCCNNode_nameProperty_displayName(),
                     Bundle.Accounts_FileWithCCNNode_noDescription(),
                     fileName));
-            ss.put(new NodeProperty<>(Bundle.Accounts_FileWithCCNNode_accountsProperty_displayName(),
+            propSet.put(new NodeProperty<>(Bundle.Accounts_FileWithCCNNode_accountsProperty_displayName(),
                     Bundle.Accounts_FileWithCCNNode_accountsProperty_displayName(),
                     Bundle.Accounts_FileWithCCNNode_noDescription(),
                     fileKey.getHits()));
-            ss.put(new NodeProperty<>(Bundle.Accounts_FileWithCCNNode_statusProperty_displayName(),
+            propSet.put(new NodeProperty<>(Bundle.Accounts_FileWithCCNNode_statusProperty_displayName(),
                     Bundle.Accounts_FileWithCCNNode_statusProperty_displayName(),
                     Bundle.Accounts_FileWithCCNNode_noDescription(),
                     fileKey.getStatuses().stream()
-                    .map(BlackboardArtifact.ReviewStatus::getDisplayName)
-                    .collect(Collectors.joining(", ")))); //NON-NLS
+                            .map(BlackboardArtifact.ReviewStatus::getDisplayName)
+                            .collect(Collectors.joining(", ")))); //NON-NLS
 
-            return s;
+            return sheet;
         }
 
         @Override
@@ -1009,74 +1413,86 @@ final public class Accounts implements AutopsyVisitableItem {
         }
     }
 
+    final private class CreditCardNumberFactory extends ObservingChildren<Long> {
+
+        private final BinResult bin;
+
+        private CreditCardNumberFactory(BinResult bin) {
+            this.bin = bin;
+        }
+
+        @Subscribe
+        @Override
+        void handleReviewStatusChange(ReviewStatusChangeEvent event) {
+            refresh(true);
+        }
+
+        @Subscribe
+        @Override
+        void handleDataAdded(ModuleDataEvent event) {
+            refresh(true);
+        }
+
+        @Override
+        protected boolean createKeys(List<Long> list) {
+
+            String query
+                    = "SELECT blackboard_artifacts.artifact_id " //NON-NLS
+                    + " FROM blackboard_artifacts " //NON-NLS
+                    + "      JOIN blackboard_attributes ON blackboard_artifacts.artifact_id = blackboard_attributes.artifact_id " //NON-NLS
+                    + " WHERE blackboard_artifacts.artifact_type_id = " + BlackboardArtifact.ARTIFACT_TYPE.TSK_ACCOUNT.getTypeID() //NON-NLS
+                    + "     AND blackboard_attributes.attribute_type_id = " + BlackboardAttribute.ATTRIBUTE_TYPE.TSK_CARD_NUMBER.getTypeID() //NON-NLS
+                    + "     AND blackboard_attributes.value_text >= '" + bin.getBINStart() + "' AND  blackboard_attributes.value_text < '" + (bin.getBINEnd() + 1) + "'" //NON-NLS
+                    + getFilterByDataSourceClause()
+                    + getRejectedArtifactFilterClause()
+                    + " ORDER BY blackboard_attributes.value_text"; //NON-NLS
+            try (SleuthkitCase.CaseDbQuery results = skCase.executeQuery(query);
+                    ResultSet rs = results.getResultSet();) {
+                while (rs.next()) {
+                    list.add(rs.getLong("artifact_id")); //NON-NLS
+                }
+            } catch (TskCoreException | SQLException ex) {
+                LOGGER.log(Level.SEVERE, "Error querying for account artifacts.", ex); //NON-NLS
+
+            }
+            return true;
+        }
+
+        @Override
+        protected Node[] createNodesForKey(Long artifactID) {
+            if (skCase == null) {
+                return new Node[0];
+            }
+
+            try {
+                BlackboardArtifact art = skCase.getBlackboardArtifact(artifactID);
+                return new Node[]{new AccountArtifactNode(art)};
+            } catch (TskCoreException ex) {
+                LOGGER.log(Level.SEVERE, "Error creating BlackboardArtifactNode for artifact with ID " + artifactID, ex);   //NON-NLS
+                return new Node[0];
+            }
+        }
+    }
+
+    private String getBinRangeString(BinResult bin) {
+        if (bin.getBINStart() == bin.getBINEnd()) {
+            return Integer.toString(bin.getBINStart());
+        } else {
+            return bin.getBINStart() + "-" + StringUtils.difference(bin.getBINStart() + "", bin.getBINEnd() + "");
+        }
+    }
+
     final public class BINNode extends DisplayableItemNode {
 
         /**
          * Creates the nodes for the credit card numbers
          */
-        final private class CreditCardNumberFactory extends ObservingChildren<Long> {
-
-            @Subscribe
-            @Override
-            void handleReviewStatusChange(ReviewStatusChangeEvent event) {
-                refreshKeys();
-                //make sure to refresh the nodes for artifacts that changed statuses.
-                event.artifacts.stream().map(BlackboardArtifact::getArtifactID).forEach(this::refreshKey);
-            }
-
-            @Subscribe
-            @Override
-            void handleDataAdded(ModuleDataEvent event) {
-                refreshKeys();
-            }
-
-            @Override
-            protected List<Long> createKeys() {
-                List<Long> list = new ArrayList<>();
-
-                String query
-                        = "SELECT blackboard_artifacts.artifact_id " //NON-NLS
-                        + " FROM blackboard_artifacts " //NON-NLS
-                        + "      JOIN blackboard_attributes ON blackboard_artifacts.artifact_id = blackboard_attributes.artifact_id " //NON-NLS
-                        + " WHERE blackboard_artifacts.artifact_type_id = " + BlackboardArtifact.ARTIFACT_TYPE.TSK_ACCOUNT.getTypeID() //NON-NLS
-                        + "     AND blackboard_attributes.attribute_type_id = " + BlackboardAttribute.ATTRIBUTE_TYPE.TSK_CARD_NUMBER.getTypeID() //NON-NLS
-                        + "     AND blackboard_attributes.value_text >= '" + bin.getBINStart() + "' AND  blackboard_attributes.value_text < '" + (bin.getBINEnd() + 1) + "'" //NON-NLS
-                        + getRejectedArtifactFilterClause()
-                        + " ORDER BY blackboard_attributes.value_text"; //NON-NLS
-                try (SleuthkitCase.CaseDbQuery results = skCase.executeQuery(query);
-                        ResultSet rs = results.getResultSet();) {
-                    while (rs.next()) {
-                        list.add(rs.getLong("artifact_id")); //NON-NLS
-                    }
-                } catch (TskCoreException | SQLException ex) {
-                    LOGGER.log(Level.SEVERE, "Error querying for account artifacts.", ex); //NON-NLS
-
-                }
-                return list;
-            }
-
-            @Override
-            protected Node[] createNodes(Long artifactID) {
-                if (skCase == null) {
-                    return new Node[0];
-                }
-
-                try {
-                    BlackboardArtifact art = skCase.getBlackboardArtifact(artifactID);
-                    return new Node[]{new AccountArtifactNode(art)};
-                } catch (TskCoreException ex) {
-                    LOGGER.log(Level.WARNING, "Error creating BlackboardArtifactNode for artifact with ID " + artifactID, ex);   //NON-NLS
-                    return new Node[0];
-                }
-            }
-        }
         private final BinResult bin;
 
         private BINNode(BinResult bin) {
-            super(Children.LEAF);
+            super(Children.create(new CreditCardNumberFactory(bin), true), Lookups.singleton(getBinRangeString(bin)));
             this.bin = bin;
-            setChildren(Children.createLazy(CreditCardNumberFactory::new));
-            setName(getBinRangeString());
+            setName(getBinRangeString(bin));
             updateDisplayName();
             this.setIconBaseWithExtension("org/sleuthkit/autopsy/images/bank.png");   //NON-NLS
             reviewStatusBus.register(this);
@@ -1085,6 +1501,7 @@ final public class Accounts implements AutopsyVisitableItem {
         @Subscribe
         void handleReviewStatusChange(ReviewStatusChangeEvent event) {
             updateDisplayName();
+            updateSheet();
         }
 
         @Subscribe
@@ -1100,11 +1517,12 @@ final public class Accounts implements AutopsyVisitableItem {
                     + " WHERE blackboard_artifacts.artifact_type_id = " + BlackboardArtifact.ARTIFACT_TYPE.TSK_ACCOUNT.getTypeID() //NON-NLS
                     + "     AND blackboard_attributes.attribute_type_id = " + BlackboardAttribute.ATTRIBUTE_TYPE.TSK_CARD_NUMBER.getTypeID() //NON-NLS
                     + "     AND blackboard_attributes.value_text >= '" + bin.getBINStart() + "' AND  blackboard_attributes.value_text < '" + (bin.getBINEnd() + 1) + "'" //NON-NLS
+                    + getFilterByDataSourceClause()
                     + getRejectedArtifactFilterClause();
             try (SleuthkitCase.CaseDbQuery results = skCase.executeQuery(query);
-                    ResultSet rs = results.getResultSet();) {
-                while (rs.next()) {
-                    setDisplayName(getBinRangeString() + " (" + rs.getLong("count") + ")"); //NON-NLS
+                    ResultSet resultSet = results.getResultSet();) {
+                while (resultSet.next()) {
+                    setDisplayName(getBinRangeString(bin) + " (" + resultSet.getLong("count") + ")"); //NON-NLS
                 }
             } catch (TskCoreException | SQLException ex) {
                 LOGGER.log(Level.SEVERE, "Error querying for account artifacts.", ex); //NON-NLS
@@ -1113,22 +1531,14 @@ final public class Accounts implements AutopsyVisitableItem {
 
         }
 
-        private String getBinRangeString() {
-            if (bin.getBINStart() == bin.getBINEnd()) {
-                return Integer.toString(bin.getBINStart());
-            } else {
-                return bin.getBINStart() + "-" + StringUtils.difference(bin.getBINStart() + "", bin.getBINEnd() + "");
-            }
-        }
-
         @Override
         public boolean isLeafTypeNode() {
             return true;
         }
 
         @Override
-        public <T> T accept(DisplayableItemNodeVisitor<T> v) {
-            return v.visit(this);
+        public <T> T accept(DisplayableItemNodeVisitor<T> visitor) {
+            return visitor.visit(this);
         }
 
         @Override
@@ -1136,13 +1546,13 @@ final public class Accounts implements AutopsyVisitableItem {
             return getClass().getName();
         }
 
-        private Sheet.Set getPropertySet(Sheet s) {
-            Sheet.Set ss = s.get(Sheet.PROPERTIES);
-            if (ss == null) {
-                ss = Sheet.createPropertiesSet();
-                s.put(ss);
+        private Sheet.Set getPropertySet(Sheet sheet) {
+            Sheet.Set sheetSet = sheet.get(Sheet.PROPERTIES);
+            if (sheetSet == null) {
+                sheetSet = Sheet.createPropertiesSet();
+                sheet.put(sheetSet);
             }
-            return ss;
+            return sheetSet;
         }
 
         @Override
@@ -1165,7 +1575,7 @@ final public class Accounts implements AutopsyVisitableItem {
             properties.put(new NodeProperty<>(Bundle.Accounts_BINNode_binProperty_displayName(),
                     Bundle.Accounts_BINNode_binProperty_displayName(),
                     Bundle.Accounts_BINNode_noDescription(),
-                    getBinRangeString()));
+                    getBinRangeString(bin)));
             properties.put(new NodeProperty<>(Bundle.Accounts_BINNode_accountsProperty_displayName(),
                     Bundle.Accounts_BINNode_accountsProperty_displayName(), Bundle.Accounts_BINNode_noDescription(),
                     bin.getCount()));
@@ -1199,6 +1609,11 @@ final public class Accounts implements AutopsyVisitableItem {
             }
             return sheet;
         }
+
+        private void updateSheet() {
+            this.setSheet(createSheet());
+        }
+
     }
 
     /**
@@ -1329,7 +1744,9 @@ final public class Accounts implements AutopsyVisitableItem {
         private AccountArtifactNode(BlackboardArtifact artifact) {
             super(artifact, "org/sleuthkit/autopsy/images/credit-card.png");   //NON-NLS
             this.artifact = artifact;
-            setName("" + this.artifact.getArtifactID());
+            setName(Long.toString(this.artifact.getArtifactID()));
+
+            reviewStatusBus.register(this);
         }
 
         @Override
@@ -1358,8 +1775,25 @@ final public class Accounts implements AutopsyVisitableItem {
 
             return sheet;
         }
+
+        @Subscribe
+        void handleReviewStatusChange(ReviewStatusChangeEvent event) {
+
+            // Update the node if event includes this artifact
+            event.artifacts.stream().filter((art) -> (art.getArtifactID() == this.artifact.getArtifactID())).map((_item) -> {
+                return _item;
+            }).forEachOrdered((_item) -> {
+                updateSheet();
+            });
+        }
+
+        private void updateSheet() {
+            this.setSheet(createSheet());
+        }
+
     }
 
+    @Deprecated
     private final class ToggleShowRejected extends AbstractAction {
 
         @NbBundle.Messages("ToggleShowRejected.name=Show Rejected Results")
@@ -1372,6 +1806,16 @@ final public class Accounts implements AutopsyVisitableItem {
             showRejected = !showRejected;
             reviewStatusBus.post(new ReviewStatusChangeEvent(Collections.emptySet(), null));
         }
+    }
+
+    /**
+     * Update the user interface to show or hide rejected artifacts.
+     *
+     * @param showRejected Show rejected artifacts? Yes if true; otherwise no.
+     */
+    public void setShowRejected(boolean showRejected) {
+        this.showRejected = showRejected;
+        reviewStatusBus.post(new ReviewStatusChangeEvent(Collections.emptySet(), null));
     }
 
     private abstract class ReviewStatusAction extends AbstractAction {
@@ -1387,8 +1831,10 @@ final public class Accounts implements AutopsyVisitableItem {
         @Override
         public void actionPerformed(ActionEvent e) {
 
-            /* get paths for selected nodes to reselect after applying review
-             * status change */
+            /*
+             * get paths for selected nodes to reselect after applying review
+             * status change
+             */
             List<String[]> selectedPaths = Utilities.actionsGlobalContext().lookupAll(Node.class).stream()
                     .map(node -> {
                         String[] createPath;
@@ -1407,9 +1853,11 @@ final public class Accounts implements AutopsyVisitableItem {
                                         : siblings.get(Integer.max(indexOf + 1, siblings.size() - 1));
                                 createPath = NodeOp.createPath(sibling, null);
                             } else {
-                                /* if there are no other siblings to select,
+                                /*
+                                 * if there are no other siblings to select,
                                  * just return null, but note we need to filter
-                                 * this out of stream below */
+                                 * this out of stream below
+                                 */
                                 return null;
                             }
                         } else {
@@ -1425,7 +1873,7 @@ final public class Accounts implements AutopsyVisitableItem {
             final Collection<? extends BlackboardArtifact> artifacts = Utilities.actionsGlobalContext().lookupAll(BlackboardArtifact.class);
             artifacts.forEach(artifact -> {
                 try {
-                    skCase.setReviewStatus(artifact, newStatus);
+                    artifact.setReviewStatus(newStatus);
                 } catch (TskCoreException ex) {
                     LOGGER.log(Level.SEVERE, "Error changing artifact review status.", ex); //NON-NLS
                 }
@@ -1441,7 +1889,7 @@ final public class Accounts implements AutopsyVisitableItem {
             selectedPaths.forEach(path -> {
                 try {
                     toArray.add(NodeOp.findPath(rootNode, path));
-                } catch (NodeNotFoundException ex) {
+                } catch (NodeNotFoundException ex) { //NOPMD empty catch clause
                     //just ingnore paths taht don't exist.  this is expected since we are rejecting
                 }
             });
@@ -1466,14 +1914,48 @@ final public class Accounts implements AutopsyVisitableItem {
         }
     }
 
-    private class ReviewStatusChangeEvent {
+    static private class ReviewStatusChangeEvent {
 
         Collection<? extends BlackboardArtifact> artifacts;
         BlackboardArtifact.ReviewStatus newReviewStatus;
 
-        public ReviewStatusChangeEvent(Collection<? extends BlackboardArtifact> artifacts, BlackboardArtifact.ReviewStatus newReviewStatus) {
+        ReviewStatusChangeEvent(Collection<? extends BlackboardArtifact> artifacts, BlackboardArtifact.ReviewStatus newReviewStatus) {
             this.artifacts = artifacts;
             this.newReviewStatus = newReviewStatus;
+        }
+    }
+
+    /**
+     * Get the path of the icon for the given Account Type.
+     *
+     * @return The path of the icon for the given Account Type.
+     */
+    public static String getIconFilePath(Account.Type type) {
+
+        if (type.equals(Account.Type.CREDIT_CARD)) {
+            return ICON_BASE_PATH + "credit-card.png";
+        } else if (type.equals(Account.Type.DEVICE)) {
+            return ICON_BASE_PATH + "image.png";
+        } else if (type.equals(Account.Type.EMAIL)) {
+            return ICON_BASE_PATH + "email.png";
+        } else if (type.equals(Account.Type.FACEBOOK)) {
+            return ICON_BASE_PATH + "facebook.png";
+        } else if (type.equals(Account.Type.INSTAGRAM)) {
+            return ICON_BASE_PATH + "instagram.png";
+        } else if (type.equals(Account.Type.MESSAGING_APP)) {
+            return ICON_BASE_PATH + "messaging.png";
+        } else if (type.equals(Account.Type.PHONE)) {
+            return ICON_BASE_PATH + "phone.png";
+        } else if (type.equals(Account.Type.TWITTER)) {
+            return ICON_BASE_PATH + "twitter.png";
+        } else if (type.equals(Account.Type.WEBSITE)) {
+            return ICON_BASE_PATH + "web-file.png";
+        } else if (type.equals(Account.Type.WHATSAPP)) {
+            return ICON_BASE_PATH + "WhatsApp.png";
+        } else {
+            //there could be a default icon instead...
+            return ICON_BASE_PATH + "face.png";
+//            throw new IllegalArgumentException("Unknown Account.Type: " + type.getTypeName());
         }
     }
 }

@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011 Basis Technology Corp.
+ * Copyright 2011-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,17 +18,15 @@
  */
 package org.sleuthkit.autopsy.ingest;
 
-import java.awt.*;
+import java.awt.Cursor;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
-import java.beans.PropertyChangeEvent;
-import java.beans.PropertyChangeListener;
 import javax.swing.JMenuItem;
 import javax.swing.text.html.HTMLEditorKit;
 import javax.swing.text.html.StyleSheet;
-import org.openide.util.Lookup;
 import org.sleuthkit.autopsy.casemodule.Case;
-import org.sleuthkit.autopsy.corecomponentinterfaces.BlackboardResultViewer;
+import org.sleuthkit.autopsy.casemodule.NoCurrentCaseException;
+import org.sleuthkit.autopsy.directorytree.DirectoryTreeTopComponent;
 import org.sleuthkit.autopsy.ingest.IngestMessagePanel.IngestMessageGroup;
 import org.sleuthkit.datamodel.AbstractFile;
 import org.sleuthkit.datamodel.BlackboardArtifact;
@@ -38,9 +36,11 @@ import org.sleuthkit.datamodel.TskException;
 /**
  * Details panel within IngestMessagePanel
  */
+@SuppressWarnings("PMD.SingularField") // UI widgets cause lots of false positives
 class IngestMessageDetailsPanel extends javax.swing.JPanel {
 
-    private IngestMessageMainPanel mainPanel;
+    private final IngestMessageMainPanel mainPanel;
+    private final DirectoryTreeTopComponent dtc = DirectoryTreeTopComponent.findInstance();
 
     /**
      * Creates new form IngestMessageDetailsPanel
@@ -68,18 +68,6 @@ class IngestMessageDetailsPanel extends javax.swing.JPanel {
         styleSheet.addRule("table {table-layout:fixed;}"); //NON-NLS
         styleSheet.addRule("td {white-space:pre-wrap;overflow:hidden;}"); //NON-NLS
         styleSheet.addRule("th {font-weight:bold;}"); //NON-NLS
-
-        BlackboardResultViewer v = Lookup.getDefault().lookup(BlackboardResultViewer.class);
-        v.addOnFinishedListener(new PropertyChangeListener() {
-
-            @Override
-            public void propertyChange(PropertyChangeEvent evt) {
-                if (evt.getPropertyName().equals(BlackboardResultViewer.FINISHED_DISPLAY_EVT)) {
-                    artifactViewerFinished();
-                }
-            }
-
-        });
 
         //right click
         messageDetailsPane.setComponentPopupMenu(rightClickMenu);
@@ -128,7 +116,7 @@ class IngestMessageDetailsPanel extends javax.swing.JPanel {
         messageDetailsPane.setBackground(new java.awt.Color(221, 221, 235));
         messageDetailsPane.setBorder(null);
         messageDetailsPane.setContentType(org.openide.util.NbBundle.getMessage(IngestMessageDetailsPanel.class, "IngestMessageDetailsPanel.messageDetailsPane.contentType")); // NOI18N
-        messageDetailsPane.setFont(messageDetailsPane.getFont().deriveFont(messageDetailsPane.getFont().getStyle() & ~java.awt.Font.BOLD, 10));
+        messageDetailsPane.setFont(messageDetailsPane.getFont().deriveFont(messageDetailsPane.getFont().getSize()-1f));
         messageDetailsPane.setToolTipText(org.openide.util.NbBundle.getMessage(IngestMessageDetailsPanel.class, "IngestMessageDetailsPanel.messageDetailsPane.toolTipText")); // NOI18N
         jScrollPane1.setViewportView(messageDetailsPane);
 
@@ -152,11 +140,9 @@ class IngestMessageDetailsPanel extends javax.swing.JPanel {
         jToolBar1.add(backButton);
         jToolBar1.add(filler1);
 
-        viewArtifactButton.setFont(viewArtifactButton.getFont().deriveFont(viewArtifactButton.getFont().getStyle() & ~java.awt.Font.BOLD, 11));
         viewArtifactButton.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/ingest/goto_res.png"))); // NOI18N
         viewArtifactButton.setText(org.openide.util.NbBundle.getMessage(IngestMessageDetailsPanel.class, "IngestMessageDetailsPanel.viewArtifactButton.text")); // NOI18N
         viewArtifactButton.setIconTextGap(2);
-        viewArtifactButton.setPreferredSize(new java.awt.Dimension(93, 23));
         viewArtifactButton.addActionListener(new java.awt.event.ActionListener() {
             public void actionPerformed(java.awt.event.ActionEvent evt) {
                 viewArtifactButtonActionPerformed(evt);
@@ -164,11 +150,9 @@ class IngestMessageDetailsPanel extends javax.swing.JPanel {
         });
         jToolBar1.add(viewArtifactButton);
 
-        viewContentButton.setFont(viewContentButton.getFont().deriveFont(viewContentButton.getFont().getStyle() & ~java.awt.Font.BOLD, 11));
         viewContentButton.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/ingest/goto_dir.png"))); // NOI18N
         viewContentButton.setText(org.openide.util.NbBundle.getMessage(IngestMessageDetailsPanel.class, "IngestMessageDetailsPanel.viewContentButton.text")); // NOI18N
         viewContentButton.setIconTextGap(2);
-        viewContentButton.setPreferredSize(new java.awt.Dimension(111, 23));
         viewContentButton.addActionListener(new java.awt.event.ActionListener() {
             public void actionPerformed(java.awt.event.ActionEvent evt) {
                 viewContentButtonActionPerformed(evt);
@@ -193,11 +177,27 @@ class IngestMessageDetailsPanel extends javax.swing.JPanel {
     }// </editor-fold>//GEN-END:initComponents
 
     private void viewContentButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_viewContentButtonActionPerformed
-        viewContent(evt);
+        messageDetailsPane.setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+        final IngestMessageGroup messageGroup = mainPanel.getMessagePanel().getSelectedMessage();
+        if (messageGroup != null) {
+            BlackboardArtifact art = messageGroup.getData();
+            if (art != null) {
+                dtc.viewArtifactContent(art);
+            }
+        }
+        messageDetailsPane.setCursor(null);
     }//GEN-LAST:event_viewContentButtonActionPerformed
 
     private void viewArtifactButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_viewArtifactButtonActionPerformed
-        viewArtifact(evt);
+        messageDetailsPane.setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+        final IngestMessageGroup messageGroup = mainPanel.getMessagePanel().getSelectedMessage();
+        if (messageGroup != null) {
+            BlackboardArtifact art = messageGroup.getData();
+            if (art != null) {
+                dtc.viewArtifact(art);
+            }
+        }
+        messageDetailsPane.setCursor(null);
     }//GEN-LAST:event_viewArtifactButtonActionPerformed
 
     private void backButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_backButtonActionPerformed
@@ -215,46 +215,6 @@ class IngestMessageDetailsPanel extends javax.swing.JPanel {
     private javax.swing.JButton viewArtifactButton;
     private javax.swing.JButton viewContentButton;
     // End of variables declaration//GEN-END:variables
-
-    private void viewArtifact(java.awt.event.ActionEvent evt) {
-        artifactViewerInvoked();
-
-        final IngestMessageGroup messageGroup = mainPanel.getMessagePanel().getSelectedMessage();
-        if (messageGroup != null) {
-            BlackboardArtifact art = messageGroup.getData();
-            if (art != null) {
-                BlackboardResultViewer v = Lookup.getDefault().lookup(BlackboardResultViewer.class);
-                v.viewArtifact(art);
-            }
-        }
-
-    }
-
-    private void viewContent(java.awt.event.ActionEvent evt) {
-        artifactViewerInvoked();
-
-        final IngestMessageGroup messageGroup = mainPanel.getMessagePanel().getSelectedMessage();
-        if (messageGroup != null) {
-            BlackboardArtifact art = messageGroup.getData();
-            if (art != null) {
-                BlackboardResultViewer v = Lookup.getDefault().lookup(BlackboardResultViewer.class);
-                v.viewArtifactContent(art);
-            }
-        }
-    }
-
-    private void artifactViewerInvoked() {
-        //viewArtifactButton.setEnabled(false);
-        //viewContentButton.setEnabled(false);
-        messageDetailsPane.setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
-
-    }
-
-    private void artifactViewerFinished() {
-        //viewArtifactButton.setEnabled(true);
-        //viewContentButton.setEnabled(true);
-        messageDetailsPane.setCursor(null);
-    }
 
     /**
      * Display the details of a given message
@@ -279,7 +239,7 @@ class IngestMessageDetailsPanel extends javax.swing.JPanel {
                 this.messageDetailsPane.setText("");
             }
             //show artifact/content only for a message group with a single message
-            BlackboardArtifact artifact = messageGroup.getData();;
+            BlackboardArtifact artifact = messageGroup.getData();
             if (artifact != null && messageGroup.getCount() == 1) {
                 viewArtifactButton.setEnabled(true);
 
@@ -287,8 +247,8 @@ class IngestMessageDetailsPanel extends javax.swing.JPanel {
                 long objId = artifact.getObjectID();
                 AbstractFile file = null;
                 try {
-                    file = Case.getCurrentCase().getSleuthkitCase().getAbstractFileById(objId);
-                } catch (TskException ex) {
+                    file = Case.getCurrentCaseThrows().getSleuthkitCase().getAbstractFileById(objId);
+                } catch (TskException | NoCurrentCaseException ex) {
 
                 }
                 if (file == null) {

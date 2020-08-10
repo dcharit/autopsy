@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011-2016 Basis Technology Corp.
+ * Copyright 2011-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -31,10 +31,14 @@ import javax.swing.SwingUtilities;
  * Allows creation of JavaFX menus with the same structure as Swing menus and
  * which invoke the same actions.
  */
-public class SwingFXMenuUtils extends MenuItem {
+class SwingFXMenuUtils {
+
+    private SwingFXMenuUtils() {
+    }
 
     /**
-     * Factory method that creates a JavaFX MenuItem backed by a MenuElement
+     * Factory method that creates a JavaFX MenuItem backed by a swing
+     * MenuElement
      *
      * @param jMenuElement The MenuElement to create a JavaFX menu for.
      *
@@ -60,6 +64,7 @@ public class SwingFXMenuUtils extends MenuItem {
 
         private MenuItemAdapter(final JMenuItem jMenuItem) {
             super(jMenuItem.getText());
+            setDisable(jMenuItem.isEnabled() == false);
             setOnAction(actionEvent -> SwingUtilities.invokeLater(jMenuItem::doClick));
         }
     }
@@ -77,6 +82,7 @@ public class SwingFXMenuUtils extends MenuItem {
          */
         MenuAdapter(final JMenu jMenu) {
             super(jMenu.getText());
+            setDisable(jMenu.isEnabled() == false);
             populateSubMenus(jMenu);
         }
 
@@ -87,6 +93,7 @@ public class SwingFXMenuUtils extends MenuItem {
          */
         MenuAdapter(JPopupMenu jPopupMenu) {
             super(jPopupMenu.getLabel());
+            setDisable(jPopupMenu.isEnabled() == false);
             populateSubMenus(jPopupMenu);
         }
 
@@ -107,7 +114,6 @@ public class SwingFXMenuUtils extends MenuItem {
 
                 } else if (menuElement instanceof JPopupMenu) {
                     populateSubMenus(menuElement);
-
                 } else {
                     throw new UnsupportedOperationException("Unown MenuElement subclass: " + menuElement.getClass().getName());
                 }

@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2014 Basis Technology Corp.
+ * Copyright 2014-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -42,6 +42,10 @@ import org.sleuthkit.datamodel.Image;
 import org.sleuthkit.datamodel.SleuthkitCase;
 import org.sleuthkit.datamodel.TskCoreException;
 
+/**
+ * Display statistics on system performance.
+ */
+@SuppressWarnings("PMD.SingularField") // UI widgets cause lots of false positives
 public class PerformancePanel extends javax.swing.JDialog {
 
     /**
@@ -120,10 +124,10 @@ public class PerformancePanel extends javax.swing.JDialog {
                                     .addComponent(jLabel3))
                                 .addGap(31, 31, 31)
                                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                                    .addComponent(fileReadLabel, javax.swing.GroupLayout.PREFERRED_SIZE, 228, javax.swing.GroupLayout.PREFERRED_SIZE)
-                                    .addComponent(dbReadLabel, javax.swing.GroupLayout.PREFERRED_SIZE, 237, javax.swing.GroupLayout.PREFERRED_SIZE)
-                                    .addComponent(cpuTimeLabel, javax.swing.GroupLayout.PREFERRED_SIZE, 284, javax.swing.GroupLayout.PREFERRED_SIZE)
-                                    .addComponent(imgReadLabel, javax.swing.GroupLayout.PREFERRED_SIZE, 237, javax.swing.GroupLayout.PREFERRED_SIZE))
+                                    .addComponent(fileReadLabel)
+                                    .addComponent(dbReadLabel)
+                                    .addComponent(cpuTimeLabel)
+                                    .addComponent(imgReadLabel))
                                 .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
                             .addGroup(layout.createSequentialGroup()
                                 .addComponent(jLabel4)
@@ -134,7 +138,7 @@ public class PerformancePanel extends javax.swing.JDialog {
                             .addComponent(jLabel5))
                         .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
                     .addGroup(layout.createSequentialGroup()
-                        .addComponent(statusLabel, javax.swing.GroupLayout.PREFERRED_SIZE, 508, javax.swing.GroupLayout.PREFERRED_SIZE)
+                        .addComponent(statusLabel)
                         .addGap(0, 0, Short.MAX_VALUE))))
         );
         layout.setVerticalGroup(
@@ -299,7 +303,7 @@ public class PerformancePanel extends javax.swing.JDialog {
 
             Case curCase;
             try {
-                curCase = Case.getCurrentCase();
+                curCase = Case.getCurrentCaseThrows();
             } catch (Exception e) {
                 setImgLabel(NbBundle.getMessage(this.getClass(), "PerformancePanel.label.caseNotOpen.text"));
                 setStatusMsg("");
@@ -380,7 +384,7 @@ public class PerformancePanel extends javax.swing.JDialog {
 
             Case curCase;
             try {
-                curCase = Case.getCurrentCase();
+                curCase = Case.getCurrentCaseThrows();
             } catch (Exception e) {
                 setFileReadLabel(
                         NbBundle.getMessage(this.getClass(), "PerformancePanel.label.caseNotOpen.text"));
@@ -472,7 +476,7 @@ public class PerformancePanel extends javax.swing.JDialog {
 
             Case curCase;
             try {
-                curCase = Case.getCurrentCase();
+                curCase = Case.getCurrentCaseThrows();
             } catch (Exception e) {
                 setDbLabel(NbBundle.getMessage(this.getClass(), "PerformancePanel.label.caseNotOpen.text"));
                 return;

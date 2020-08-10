@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011 Basis Technology Corp.
+ * Copyright 2011-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,7 +18,7 @@
  */
 package org.sleuthkit.autopsy.keywordsearch;
 
-import java.util.LinkedHashMap;
+import org.openide.util.NbBundle;
 
 /**
  * Interface to provide HTML text to display in ExtractedContentViewer. There is
@@ -26,6 +26,11 @@ import java.util.LinkedHashMap;
  * keyword hits and a version that does not do markup so that you can simply
  * view the stored text.
  */
+@NbBundle.Messages({
+    "IndexedText.errorMessage.errorGettingText=<span style='font-style:italic'>Error retrieving indexed text.</span>",
+    "IndexedText.warningMessage.knownFile=<span style='font-style:italic'>This file is a known file (based on MD5 hash) and does not have indexed text.</span>",
+    "IndexedText.warningMessage.noTextAvailable=<span style='font-style:italic'>No indexed text for this file.</span>"
+})
 interface IndexedText {
 
     /**
@@ -50,8 +55,7 @@ interface IndexedText {
     String getAnchorPrefix();
 
     /**
-     * if searchable text, returns number of hits found and encoded in the
-     * text
+     * if searchable text, returns number of hits found and encoded in the text
      *
      * @return
      */
@@ -139,13 +143,5 @@ interface IndexedText {
      * @return the current item number
      */
     int currentItem();
-
-    /**
-     * get a map storing which pages have matches to their number, or 0 if
-     * unknown
-     *
-     * @return map storing pages with matches, or null if not supported
-     */
-    LinkedHashMap<Integer, Integer> getHitsPages();
 
 }

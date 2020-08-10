@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  * 
- * Copyright 2013 Basis Technology Corp.
+ * Copyright 2013-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,8 +19,8 @@
 package org.sleuthkit.autopsy.modules.hashdatabase;
 
 import java.awt.Color;
+import java.awt.Component;
 import java.awt.Dimension;
-import java.awt.Toolkit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -30,15 +30,16 @@ import javax.swing.JOptionPane;
 import javax.swing.JScrollPane;
 import javax.swing.JTextArea;
 import javax.swing.SwingWorker;
+import org.apache.commons.lang3.StringUtils;
 import org.openide.util.NbBundle;
 import org.sleuthkit.autopsy.modules.hashdatabase.HashDbManager.HashDb;
 import org.sleuthkit.datamodel.HashEntry;
 import org.sleuthkit.datamodel.TskCoreException;
 
 /**
- *
- * @author sidhesh
+ * Progress dialog for MD5 hash values being added to the hash database.
  */
+@SuppressWarnings("PMD.SingularField") // UI widgets cause lots of false positives
 public class AddHashValuesToDatabaseProgressDialog extends javax.swing.JDialog {
 
     private final AddHashValuesToDatabaseDialog parentRef;
@@ -46,7 +47,14 @@ public class AddHashValuesToDatabaseProgressDialog extends javax.swing.JDialog {
     private final HashDb hashDb;
     private final List<HashEntry> hashes;
     private final List<String> invalidHashes;
-    private final Pattern md5Pattern;
+    
+    // Matches hash with optional comma separated comment.
+    private static final Pattern HASH_LINE_PATTERN = Pattern.compile("^([a-fA-F0-9]{32})(,(.*))?$");
+    // The regex group for the hash.
+    private static final int HASH_GROUP = 1;
+    // The regex group for the comment.
+    private static final int COMMENT_GROUP = 3;
+    
     private String errorTitle;
     private String errorMessage;
     private final String text;
@@ -61,18 +69,16 @@ public class AddHashValuesToDatabaseProgressDialog extends javax.swing.JDialog {
     AddHashValuesToDatabaseProgressDialog(AddHashValuesToDatabaseDialog parent, HashDb hashDb, String text) {
         super(parent);
         initComponents();
-        display();
+        display(parent);
         this.hashes = new ArrayList<>();
         this.invalidHashes = new ArrayList<>();
-        this.md5Pattern = Pattern.compile("^[a-fA-F0-9]{32}$"); // NON-NLS
         this.parentRef = parent;
         this.hashDb = hashDb;
         this.text = text;
     }
 
-    private void display() {
-        Dimension screenDimension = Toolkit.getDefaultToolkit().getScreenSize();
-        setLocation((screenDimension.width - getSize().width) / 2, (screenDimension.height - getSize().height) / 2);
+    private void display(Component parent) {
+        setLocationRelativeTo(parent);
         setVisible(true);
     }
 
@@ -162,10 +168,15 @@ public class AddHashValuesToDatabaseProgressDialog extends javax.swing.JDialog {
         // These entries may be of <MD5> or <MD5, comment> format
         for (String hashEntry : linesInTextArea) {
             hashEntry = hashEntry.trim();
-            Matcher m = md5Pattern.matcher(hashEntry);
-            if (m.find()) {
-                // more information can be added to the HashEntry - sha-1, sha-512, comment
-                hashes.add(new HashEntry(null, m.group(0), null, null, null));
+            Matcher m = HASH_LINE_PATTERN.matcher(hashEntry);
+            if (m.find()) {               
+                String hash = m.group(HASH_GROUP);
+                
+                // if there was a match and the match is not empty, assign to comment
+                String comment = StringUtils.isNotBlank(m.group(COMMENT_GROUP)) ? 
+                    m.group(COMMENT_GROUP).trim() : null;
+                
+                hashes.add(new HashEntry(null, hash, null, null, comment));
             } else {
                 if (!hashEntry.isEmpty()) {
                     invalidHashes.add(hashEntry);
@@ -217,16 +228,16 @@ public class AddHashValuesToDatabaseProgressDialog extends javax.swing.JDialog {
             layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
             .addGroup(layout.createSequentialGroup()
                 .addContainerGap()
-                .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING, false)
+                .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                     .addGroup(layout.createSequentialGroup()
                         .addComponent(statusLabel)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
                         .addComponent(showErrorsButton))
                     .addGroup(layout.createSequentialGroup()
                         .addComponent(addingHashesToDatabaseProgressBar, javax.swing.GroupLayout.PREFERRED_SIZE, 300, javax.swing.GroupLayout.PREFERRED_SIZE)
-                        .addGap(18, 18, 18)
-                        .addComponent(okButton, javax.swing.GroupLayout.PREFERRED_SIZE, 91, javax.swing.GroupLayout.PREFERRED_SIZE)))
-                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED, 55, Short.MAX_VALUE)
+                        .addComponent(okButton)))
+                .addContainerGap())
         );
         layout.setVerticalGroup(
             layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
@@ -236,9 +247,9 @@ public class AddHashValuesToDatabaseProgressDialog extends javax.swing.JDialog {
                     .addComponent(addingHashesToDatabaseProgressBar, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
                     .addComponent(okButton))
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
-                    .addComponent(showErrorsButton)
-                    .addComponent(statusLabel))
+                .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                    .addComponent(statusLabel)
+                    .addComponent(showErrorsButton))
                 .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
         );
 

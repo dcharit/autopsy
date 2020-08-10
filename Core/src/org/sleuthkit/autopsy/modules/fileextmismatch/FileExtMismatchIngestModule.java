@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011-2016 Basis Technology Corp.
+ * Copyright 2011-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,14 +18,13 @@
  */
 package org.sleuthkit.autopsy.modules.fileextmismatch;
 
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Set;
 import java.util.logging.Level;
 import org.openide.util.NbBundle;
 import org.openide.util.NbBundle.Messages;
 import org.sleuthkit.autopsy.casemodule.Case;
-import org.sleuthkit.autopsy.casemodule.services.Blackboard;
+import org.sleuthkit.autopsy.casemodule.NoCurrentCaseException;
 import org.sleuthkit.autopsy.coreutils.Logger;
 import org.sleuthkit.autopsy.coreutils.MessageNotifyUtil;
 import org.sleuthkit.autopsy.ingest.FileIngestModule;
@@ -33,13 +32,12 @@ import org.sleuthkit.autopsy.ingest.IngestJobContext;
 import org.sleuthkit.autopsy.ingest.IngestMessage;
 import org.sleuthkit.autopsy.ingest.IngestModuleReferenceCounter;
 import org.sleuthkit.autopsy.ingest.IngestServices;
-import org.sleuthkit.autopsy.ingest.ModuleDataEvent;
 import org.sleuthkit.autopsy.modules.fileextmismatch.FileExtMismatchDetectorModuleSettings.CHECK_TYPE;
 import org.sleuthkit.autopsy.modules.filetypeid.FileTypeDetector;
 import org.sleuthkit.datamodel.AbstractFile;
+import org.sleuthkit.datamodel.Blackboard;
 import org.sleuthkit.datamodel.BlackboardArtifact;
 import org.sleuthkit.datamodel.BlackboardArtifact.ARTIFACT_TYPE;
-import org.sleuthkit.datamodel.TskCoreException;
 import org.sleuthkit.datamodel.TskData;
 import org.sleuthkit.datamodel.TskData.FileKnown;
 import org.sleuthkit.datamodel.TskException;
@@ -109,22 +107,27 @@ public class FileExtMismatchIngestModule implements FileIngestModule {
     @Override
     @Messages({"FileExtMismatchIngestModule.indexError.message=Failed to index file extension mismatch artifact for keyword search."})
     public ProcessResult process(AbstractFile abstractFile) {
-        blackboard = Case.getCurrentCase().getServices().getBlackboard();
+        try {
+            blackboard = Case.getCurrentCaseThrows().getSleuthkitCase().getBlackboard();
+        } catch (NoCurrentCaseException ex) {
+            logger.log(Level.WARNING, "Exception while getting open case.", ex); //NON-NLS
+            return ProcessResult.ERROR;
+        }
         if (this.settings.skipKnownFiles() && (abstractFile.getKnown() == FileKnown.KNOWN)) {
             return ProcessResult.OK;
         }
 
         // skip non-files
         if ((abstractFile.getType() == TskData.TSK_DB_FILES_TYPE_ENUM.UNALLOC_BLOCKS)
-                || (abstractFile.getType() == TskData.TSK_DB_FILES_TYPE_ENUM.UNUSED_BLOCKS)
-                || (abstractFile.getType() == TskData.TSK_DB_FILES_TYPE_ENUM.SLACK)
-                || (abstractFile.isFile() == false)) {
+            || (abstractFile.getType() == TskData.TSK_DB_FILES_TYPE_ENUM.UNUSED_BLOCKS)
+            || (abstractFile.getType() == TskData.TSK_DB_FILES_TYPE_ENUM.SLACK)
+            || (abstractFile.isFile() == false)) {
             return ProcessResult.OK;
         }
 
         // deleted files often have content that was not theirs and therefor causes mismatch
         if ((abstractFile.isMetaFlagSet(TskData.TSK_FS_META_FLAG_ENUM.UNALLOC))
-                || (abstractFile.isDirNameFlagSet(TskData.TSK_FS_NAME_FLAG_ENUM.UNALLOC))) {
+            || (abstractFile.isDirNameFlagSet(TskData.TSK_FS_NAME_FLAG_ENUM.UNALLOC))) {
             return ProcessResult.OK;
         }
 
@@ -140,15 +143,17 @@ public class FileExtMismatchIngestModule implements FileIngestModule {
                 BlackboardArtifact bart = abstractFile.newArtifact(ARTIFACT_TYPE.TSK_EXT_MISMATCH_DETECTED);
 
                 try {
-                    // index the artifact for keyword search
-                    blackboard.indexArtifact(bart);
+                    /*
+                     * post the artifact which will index the artifact for
+                     * keyword search, and fire an event to notify UI of this
+                     * new artifact
+                     */
+                    blackboard.postArtifact(bart, FileExtMismatchDetectorModuleFactory.getModuleName());
                 } catch (Blackboard.BlackboardException ex) {
                     logger.log(Level.SEVERE, "Unable to index blackboard artifact " + bart.getArtifactID(), ex); //NON-NLS
-                    MessageNotifyUtil.Notify.error(
-                            Bundle.FileExtMismatchIngestModule_indexError_message(), bart.getDisplayName());
+                    MessageNotifyUtil.Notify.error(FileExtMismatchDetectorModuleFactory.getModuleName(), Bundle.FileExtMismatchIngestModule_indexError_message());
                 }
 
-                services.fireModuleDataEvent(new ModuleDataEvent(FileExtMismatchDetectorModuleFactory.getModuleName(), ARTIFACT_TYPE.TSK_EXT_MISMATCH_DETECTED, Collections.singletonList(bart)));
             }
             return ProcessResult.OK;
         } catch (TskException ex) {
@@ -164,17 +169,14 @@ public class FileExtMismatchIngestModule implements FileIngestModule {
      *
      * @return false if the two match. True if there is a mismatch.
      */
-    private boolean compareSigTypeToExt(AbstractFile abstractFile) throws TskCoreException {
+    private boolean compareSigTypeToExt(AbstractFile abstractFile) {
         String currActualExt = abstractFile.getNameExtension();
 
         // If we are skipping names with no extension
         if (settings.skipFilesWithNoExtension() && currActualExt.isEmpty()) {
             return false;
         }
-        String currActualSigType = detector.getFileType(abstractFile);
-        if (currActualSigType == null) {
-            return false;
-        }
+        String currActualSigType = detector.getMIMEType(abstractFile);
         if (settings.getCheckType() != CHECK_TYPE.ALL) {
             if (settings.getCheckType() == CHECK_TYPE.NO_TEXT_FILES) {
                 if (!currActualExt.isEmpty() && currActualSigType.equals("text/plain")) { //NON-NLS

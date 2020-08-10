@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2014 Basis Technology Corp.
+ * Copyright 2014-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,10 +18,9 @@
  */
 package org.sleuthkit.autopsy.modules.hashdatabase;
 
-import java.util.ArrayList;
-import java.util.List;
 import org.openide.util.NbBundle;
 import org.openide.util.lookup.ServiceProvider;
+import org.sleuthkit.autopsy.casemodule.NoCurrentCaseException;
 import org.sleuthkit.autopsy.coreutils.Version;
 import org.sleuthkit.autopsy.ingest.IngestModuleFactoryAdapter;
 import org.sleuthkit.autopsy.ingest.FileIngestModule;
@@ -43,13 +42,18 @@ public class HashLookupModuleFactory extends IngestModuleFactoryAdapter {
         return getModuleName();
     }
 
-    static String getModuleName() {
-        return NbBundle.getMessage(HashLookupModuleFactory.class, "HashDbIngestModule.moduleName");
+    /**
+     * Get the name of the module.
+     *
+     * @return The module name.
+     */
+    public static String getModuleName() {
+        return NbBundle.getMessage(HashLookupModuleFactory.class, "HashLookupModuleFactory.moduleName.text");
     }
 
     @Override
     public String getModuleDescription() {
-        return NbBundle.getMessage(HashLookupModuleFactory.class, "HashDbIngestModule.moduleDescription");
+        return NbBundle.getMessage(HashLookupModuleFactory.class, "HashLookupModuleFactory.moduleDescription.text");
     }
 
     @Override
@@ -60,18 +64,7 @@ public class HashLookupModuleFactory extends IngestModuleFactoryAdapter {
     @Override
     public IngestModuleIngestJobSettings getDefaultIngestJobSettings() {
         // All available hash sets are enabled and always calculate hashes is true by default.
-        HashDbManager hashDbManager = HashDbManager.getInstance();
-        List<String> knownHashSetNames = getHashSetNames(hashDbManager.getKnownFileHashSets());
-        List<String> knownBadHashSetNames = getHashSetNames(hashDbManager.getKnownBadFileHashSets());
-        return new HashLookupModuleSettings(true, knownHashSetNames, knownBadHashSetNames);
-    }
-
-    private List<String> getHashSetNames(List<HashDbManager.HashDb> hashDbs) {
-        List<String> hashSetNames = new ArrayList<>();
-        for (HashDbManager.HashDb db : hashDbs) {
-            hashSetNames.add(db.getHashSetName());
-        }
-        return hashSetNames;
+        return new HashLookupModuleSettings(true, HashDbManager.getInstance().getAllHashSets());
     }
 
     @Override
@@ -113,9 +106,13 @@ public class HashLookupModuleFactory extends IngestModuleFactoryAdapter {
     @Override
     public FileIngestModule createFileIngestModule(IngestModuleIngestJobSettings settings) {
         if (!(settings instanceof HashLookupModuleSettings)) {
-            throw new IllegalArgumentException(
-                    NbBundle.getMessage(this.getClass(), "HashLookupModuleFactory.createFileIngestModule.exception.msg"));
+            throw new IllegalArgumentException(NbBundle.getMessage(this.getClass(),
+                    "HashLookupModuleFactory.createFileIngestModule.exception.msg"));
         }
-        return new HashDbIngestModule((HashLookupModuleSettings) settings);
+        try {
+            return new HashDbIngestModule((HashLookupModuleSettings) settings);
+        } catch (NoCurrentCaseException ex) {
+            throw new IllegalArgumentException("Exception while getting open case.", ex);
+        }
     }
 }

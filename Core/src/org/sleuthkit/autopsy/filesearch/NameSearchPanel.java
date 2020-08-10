@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011 Basis Technology Corp.
+ * Copyright 2011-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,17 +16,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
- /*
- * NameSearchPanel.java
- *
- * Created on Oct 19, 2011, 11:58:53 AM
- */
 package org.sleuthkit.autopsy.filesearch;
 
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
-import java.beans.PropertyChangeListener;
 import javax.swing.JCheckBox;
 import javax.swing.JMenuItem;
 import javax.swing.JTextField;
@@ -34,10 +27,12 @@ import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 
 /**
- *
- * @author pmartel
+ * Provide a name for search.
  */
+@SuppressWarnings("PMD.SingularField") // UI widgets cause lots of false positives
 class NameSearchPanel extends javax.swing.JPanel {
+
+    private static final long serialVersionUID = 1L;
 
     /**
      * Creates new form NameSearchPanel
@@ -133,7 +128,6 @@ class NameSearchPanel extends javax.swing.JPanel {
         selectAllMenuItem.setText(org.openide.util.NbBundle.getMessage(NameSearchPanel.class, "NameSearchPanel.selectAllMenuItem.text")); // NOI18N
         rightClickMenu.add(selectAllMenuItem);
 
-        nameCheckBox.setFont(nameCheckBox.getFont().deriveFont(nameCheckBox.getFont().getStyle() & ~java.awt.Font.BOLD, 11));
         nameCheckBox.setText(org.openide.util.NbBundle.getMessage(NameSearchPanel.class, "NameSearchPanel.nameCheckBox.text")); // NOI18N
         nameCheckBox.addActionListener(new java.awt.event.ActionListener() {
             public void actionPerformed(java.awt.event.ActionEvent evt) {
@@ -141,32 +135,29 @@ class NameSearchPanel extends javax.swing.JPanel {
             }
         });
 
-        searchTextField.setFont(searchTextField.getFont().deriveFont(searchTextField.getFont().getStyle() & ~java.awt.Font.BOLD, 11));
         searchTextField.setText(org.openide.util.NbBundle.getMessage(NameSearchPanel.class, "NameSearchPanel.searchTextField.text")); // NOI18N
-        searchTextField.addMouseListener(new java.awt.event.MouseAdapter() {
-            public void mouseClicked(java.awt.event.MouseEvent evt) {
-                searchTextFieldMouseClicked(evt);
-            }
-        });
 
-        noteNameLabel.setFont(noteNameLabel.getFont().deriveFont(noteNameLabel.getFont().getStyle() & ~java.awt.Font.BOLD, 10));
+        noteNameLabel.setFont(noteNameLabel.getFont().deriveFont(noteNameLabel.getFont().getSize()-1f));
+        noteNameLabel.setHorizontalAlignment(javax.swing.SwingConstants.TRAILING);
         noteNameLabel.setText(org.openide.util.NbBundle.getMessage(NameSearchPanel.class, "NameSearchPanel.noteNameLabel.text")); // NOI18N
+        noteNameLabel.setVerticalAlignment(javax.swing.SwingConstants.TOP);
         noteNameLabel.setMaximumSize(new java.awt.Dimension(250, 30));
         noteNameLabel.setMinimumSize(new java.awt.Dimension(250, 30));
-        noteNameLabel.setPreferredSize(new java.awt.Dimension(250, 30));
+        noteNameLabel.setPreferredSize(new java.awt.Dimension(250, 40));
 
         javax.swing.GroupLayout layout = new javax.swing.GroupLayout(this);
         this.setLayout(layout);
         layout.setHorizontalGroup(
             layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-            .addGroup(layout.createSequentialGroup()
-                .addGap(0, 0, 0)
+            .addGroup(javax.swing.GroupLayout.Alignment.TRAILING, layout.createSequentialGroup()
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.TRAILING)
-                    .addComponent(noteNameLabel, javax.swing.GroupLayout.PREFERRED_SIZE, 296, javax.swing.GroupLayout.PREFERRED_SIZE)
+                    .addGroup(layout.createSequentialGroup()
+                        .addContainerGap()
+                        .addComponent(noteNameLabel, javax.swing.GroupLayout.PREFERRED_SIZE, 0, Short.MAX_VALUE))
                     .addGroup(layout.createSequentialGroup()
                         .addComponent(nameCheckBox)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(searchTextField, javax.swing.GroupLayout.PREFERRED_SIZE, 247, javax.swing.GroupLayout.PREFERRED_SIZE)))
+                        .addComponent(searchTextField, javax.swing.GroupLayout.DEFAULT_SIZE, 191, Short.MAX_VALUE)))
                 .addGap(0, 0, 0))
         );
         layout.setVerticalGroup(
@@ -180,10 +171,6 @@ class NameSearchPanel extends javax.swing.JPanel {
                 .addGap(0, 0, Short.MAX_VALUE))
         );
     }// </editor-fold>//GEN-END:initComponents
-
-    private void searchTextFieldMouseClicked(java.awt.event.MouseEvent evt) {//GEN-FIRST:event_searchTextFieldMouseClicked
-
-        this.nameCheckBox.setSelected(true);     }//GEN-LAST:event_searchTextFieldMouseClicked
 
     private void nameCheckBoxActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_nameCheckBoxActionPerformed
         setComponentsEnabled();

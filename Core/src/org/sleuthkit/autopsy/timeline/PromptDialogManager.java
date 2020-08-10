@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2015-16 Basis Technology Corp.
+ * Copyright 2015-18 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -45,7 +45,7 @@ import org.sleuthkit.autopsy.coreutils.ThreadConfined;
  */
 public final class PromptDialogManager {
 
-    private static final Logger LOGGER = Logger.getLogger(PromptDialogManager.class.getName());
+    private final static Logger logger = Logger.getLogger(PromptDialogManager.class.getName());
 
     @NbBundle.Messages("PrompDialogManager.buttonType.showTimeline=Continue")
     private static final ButtonType CONTINUE = new ButtonType(Bundle.PrompDialogManager_buttonType_showTimeline(), ButtonBar.ButtonData.OK_DONE);
@@ -56,9 +56,7 @@ public final class PromptDialogManager {
     @NbBundle.Messages("PrompDialogManager.buttonType.update=Update DB")
     private static final ButtonType UPDATE = new ButtonType(Bundle.PrompDialogManager_buttonType_update(), ButtonBar.ButtonData.OK_DONE);
 
-    /**
-     * Image to use as title bar icon in dialogs
-     */
+    /** Image to use as title bar icon in dialogs */
     private static final Image AUTOPSY_ICON;
 
     static {
@@ -66,7 +64,7 @@ public final class PromptDialogManager {
         try {
             tempImg = new Image(new URL("nbresloc:/org/netbeans/core/startup/frame.gif").openStream()); //NON-NLS
         } catch (IOException ex) {
-            LOGGER.log(Level.WARNING, "Failed to load branded icon for progress dialog.", ex); //NON-NLS
+            logger.log(Level.WARNING, "Failed to load branded icon for progress dialog.", ex); //NON-NLS
         }
         AUTOPSY_ICON = tempImg;
     }
@@ -138,7 +136,7 @@ public final class PromptDialogManager {
     }
 
     /**
-     * Set the title bar icon for the given dialog to be the autopsy logo icon.
+     * Set the title bar icon for the given Dialog to be the Autopsy logo icon.
      *
      * @param dialog The dialog to set the title bar icon for.
      */
@@ -154,7 +152,7 @@ public final class PromptDialogManager {
      * @return True if they want to continue anyways.
      */
     @NbBundle.Messages({
-        "PromptDialogManager.confirmDuringIngest.headerText=You are trying to update the Timeline DB before ingest has been completed.  The Timeline DB may be incomplete.",
+        "PromptDialogManager.confirmDuringIngest.headerText=Ingest is still going, and the Timeline may be incomplete.",
         "PromptDialogManager.confirmDuringIngest.contentText=Do you want to continue?"})
     @ThreadConfined(type = ThreadConfined.ThreadType.JFX)
     boolean confirmDuringIngest() {
@@ -177,7 +175,8 @@ public final class PromptDialogManager {
      * @return True if the user a confirms rebuilding the database.
      */
     @NbBundle.Messages({
-        "PromptDialogManager.rebuildPrompt.headerText=The Timeline DB is incomplete and/or out of date.  Some events may be missing or inaccurate and some features may be unavailable.",
+        "PromptDialogManager.rebuildPrompt.headerText=The Timeline DB is incomplete and/or out of date."
+        + "  Some events may be missing or inaccurate and some features may be unavailable.",
         "PromptDialogManager.rebuildPrompt.details=Details"})
     @ThreadConfined(type = ThreadConfined.ThreadType.JFX)
     boolean confirmRebuild(List<String> rebuildReasons) {
@@ -205,5 +204,35 @@ public final class PromptDialogManager {
 
         //show dialog and map all results except "update" to false.
         return currentDialog.showAndWait().map(UPDATE::equals).orElse(false);
+    }
+
+    @NbBundle.Messages({
+        "PromptDialogManager.showTooManyFiles.contentText="
+        + "There are too many files in the DB to ensure reasonable performance."
+        + "  Timeline will be disabled. ",
+        "PromptDialogManager.showTooManyFiles.headerText="})
+    static void showTooManyFiles() {
+        Alert dialog = new Alert(Alert.AlertType.INFORMATION,
+                Bundle.PromptDialogManager_showTooManyFiles_contentText(), ButtonType.OK);
+        dialog.initModality(Modality.APPLICATION_MODAL);
+        dialog.setTitle(Bundle.Timeline_dialogs_title());
+        setDialogIcons(dialog);
+        dialog.setHeaderText(Bundle.PromptDialogManager_showTooManyFiles_headerText());
+        dialog.showAndWait();
+    }
+
+    @NbBundle.Messages({
+        "PromptDialogManager.showTimeLineDisabledMessage.contentText="
+        + "Timeline functionality is not available yet."
+        + "  Timeline will be disabled. ",
+        "PromptDialogManager.showTimeLineDisabledMessage.headerText="})
+    static void showTimeLineDisabledMessage() {
+        Alert dialog = new Alert(Alert.AlertType.INFORMATION,
+                Bundle.PromptDialogManager_showTimeLineDisabledMessage_contentText(), ButtonType.OK);
+        dialog.initModality(Modality.APPLICATION_MODAL);
+        dialog.setTitle(Bundle.Timeline_dialogs_title());
+        setDialogIcons(dialog);
+        dialog.setHeaderText(Bundle.PromptDialogManager_showTimeLineDisabledMessage_headerText());
+        dialog.showAndWait();
     }
 }

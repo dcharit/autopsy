@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  * 
- * Copyright 2011-2016 Basis Technology Corp.
+ * Copyright 2011-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,18 +20,23 @@ package org.sleuthkit.autopsy.datasourceprocessors;
 
 import java.io.File;
 import java.util.Calendar;
-import java.util.SimpleTimeZone;
-import java.util.TimeZone;
+import java.util.List;
 import javax.swing.JFileChooser;
 import javax.swing.JPanel;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import org.openide.util.NbBundle.Messages;
 import org.sleuthkit.autopsy.casemodule.Case;
+import org.sleuthkit.autopsy.casemodule.NoCurrentCaseException;
 import org.sleuthkit.autopsy.corecomponentinterfaces.DataSourceProcessor;
 import org.sleuthkit.autopsy.coreutils.ModuleSettings;
 import org.sleuthkit.autopsy.coreutils.PathValidator;
+import org.sleuthkit.autopsy.coreutils.TimeZoneUtils;
 
+/**
+ * Allows examiner to supply a raw data source.
+ */
+@SuppressWarnings("PMD.SingularField") // UI widgets cause lots of false positives
 final class RawDSInputPanel extends JPanel implements DocumentListener {
     private static final long TWO_GB = 2000000000L;
     private static final long serialVersionUID = 1L;    //default
@@ -77,26 +82,13 @@ final class RawDSInputPanel extends JPanel implements DocumentListener {
      * machine time zone to be selected.
      */
     private void createTimeZoneList() {
-        // load and add all timezone
-        String[] ids = SimpleTimeZone.getAvailableIDs();
-        for (String id : ids) {
-            TimeZone zone = TimeZone.getTimeZone(id);
-            int offset = zone.getRawOffset() / 1000;
-            int hour = offset / 3600;
-            int minutes = (offset % 3600) / 60;
-            String item = String.format("(GMT%+d:%02d) %s", hour, minutes, id);
-
-            timeZoneComboBox.addItem(item);
+        List<String> timeZoneList = TimeZoneUtils.createTimeZoneList();
+        for (String timeZone : timeZoneList) {
+            timeZoneComboBox.addItem(timeZone);
         }
-        // get the current timezone
-        TimeZone thisTimeZone = Calendar.getInstance().getTimeZone();
-        int thisOffset = thisTimeZone.getRawOffset() / 1000;
-        int thisHour = thisOffset / 3600;
-        int thisMinutes = (thisOffset % 3600) / 60;
-        String formatted = String.format("(GMT%+d:%02d) %s", thisHour, thisMinutes, thisTimeZone.getID());
 
         // set the selected timezone
-        timeZoneComboBox.setSelectedItem(formatted);
+        timeZoneComboBox.setSelectedItem(TimeZoneUtils.createTimeZoneString(Calendar.getInstance().getTimeZone()));
     }
     
     /**
@@ -163,15 +155,15 @@ final class RawDSInputPanel extends JPanel implements DocumentListener {
             .addGroup(layout.createSequentialGroup()
                 .addComponent(pathTextField)
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
-                .addComponent(browseButton, javax.swing.GroupLayout.PREFERRED_SIZE, 77, javax.swing.GroupLayout.PREFERRED_SIZE))
+                .addComponent(browseButton))
             .addGroup(layout.createSequentialGroup()
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                    .addComponent(pathLabel, javax.swing.GroupLayout.PREFERRED_SIZE, 218, javax.swing.GroupLayout.PREFERRED_SIZE)
+                    .addComponent(pathLabel)
                     .addGroup(layout.createSequentialGroup()
-                        .addComponent(timeZoneLabel, javax.swing.GroupLayout.PREFERRED_SIZE, 168, javax.swing.GroupLayout.PREFERRED_SIZE)
+                        .addComponent(timeZoneLabel)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(timeZoneComboBox, javax.swing.GroupLayout.PREFERRED_SIZE, 199, javax.swing.GroupLayout.PREFERRED_SIZE)))
-                .addGap(0, 19, Short.MAX_VALUE))
+                        .addComponent(timeZoneComboBox, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)))
+                .addGap(0, 0, Short.MAX_VALUE))
             .addGroup(layout.createSequentialGroup()
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                     .addComponent(jBreakFileUpLabel)
@@ -296,11 +288,17 @@ final class RawDSInputPanel extends JPanel implements DocumentListener {
      *
      * @param path Absolute path to the selected data source
      */
-    @Messages({"RawDSInputPanel.error.text=Path to multi-user data source is on \"C:\" drive"})
+    @Messages({"RawDSInputPanel.error.text=Path to multi-user data source is on \"C:\" drive",
+        "RawDSInputPanel.noOpenCase.errMsg=Exception while getting open case."})
     private void warnIfPathIsInvalid(String path) {
-        if (!PathValidator.isValid(path, Case.getCurrentCase().getCaseType())) {
+        try {
+        if (!PathValidator.isValidForMultiUserCase(path, Case.getCurrentCaseThrows().getCaseType())) {
             errorLabel.setVisible(true);
             errorLabel.setText(Bundle.RawDSInputPanel_error_text());
+        }
+        } catch (NoCurrentCaseException ex) {
+            errorLabel.setVisible(true);
+            errorLabel.setText(Bundle.RawDSInputPanel_noOpenCase_errMsg());
         }
     }
 

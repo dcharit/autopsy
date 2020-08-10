@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011-2014 Basis Technology Corp.
+ * Copyright 2011-2017 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,13 +19,20 @@
 package org.sleuthkit.autopsy.directorytree;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.logging.Level;
 import javax.swing.AbstractAction;
 import javax.swing.Action;
 import org.openide.util.NbBundle;
+import org.openide.util.Utilities;
 import org.sleuthkit.autopsy.actions.AddContentTagAction;
+import org.sleuthkit.autopsy.actions.DeleteFileContentTagAction;
+import org.sleuthkit.autopsy.casemodule.NoCurrentCaseException;
 import org.sleuthkit.autopsy.coreutils.ContextMenuExtensionPoint;
+import org.sleuthkit.datamodel.AbstractFile;
 import org.sleuthkit.datamodel.Content;
 import org.sleuthkit.datamodel.ContentVisitor;
 import org.sleuthkit.datamodel.DerivedFile;
@@ -33,8 +40,10 @@ import org.sleuthkit.datamodel.Directory;
 import org.sleuthkit.datamodel.FileSystem;
 import org.sleuthkit.datamodel.Image;
 import org.sleuthkit.datamodel.LocalFile;
+import org.sleuthkit.datamodel.LocalDirectory;
 import org.sleuthkit.datamodel.VirtualDirectory;
 import org.sleuthkit.datamodel.Volume;
+import org.sleuthkit.autopsy.coreutils.Logger;
 
 public class ExplorerNodeActionVisitor extends ContentVisitor.Default<List<? extends Action>> {
 
@@ -65,8 +74,12 @@ public class ExplorerNodeActionVisitor extends ContentVisitor.Default<List<? ext
     public List<? extends Action> visit(final Image img) {
         List<Action> lst = new ArrayList<>();
         //TODO lst.add(new ExtractAction("Extract Image", img));
-        lst.add(new ExtractUnallocAction(
+        try {
+            lst.add(new ExtractUnallocAction(
                 NbBundle.getMessage(this.getClass(), "ExplorerNodeActionVisitor.action.extUnallocToSingleFiles"), img));
+        } catch (NoCurrentCaseException ex) { 
+            Logger.getLogger(ExplorerNodeActionVisitor.class.getName()).log(Level.SEVERE, "Exception while getting open case.", ex); //NON-NLS
+        }
         return lst;
     }
 
@@ -79,54 +92,111 @@ public class ExplorerNodeActionVisitor extends ContentVisitor.Default<List<? ext
     public List<? extends Action> visit(final Volume vol) {
         List<AbstractAction> lst = new ArrayList<>();
         lst.add(new ExtractUnallocAction(
-                NbBundle.getMessage(this.getClass(), "ExplorerNodeActionVisitor.action.extUnallocToSingleFile"), vol));
+            NbBundle.getMessage(this.getClass(), "ExplorerNodeActionVisitor.action.extUnallocToSingleFile"), vol));
+         
         return lst;
     }
 
     @Override
     public List<? extends Action> visit(final Directory d) {
-        List<Action> actions = new ArrayList<>();
-        actions.add(AddContentTagAction.getInstance());
-        actions.addAll(ContextMenuExtensionPoint.getActions());
-        return actions;
+        List<Action> actionsList = new ArrayList<>();
+        actionsList.add(AddContentTagAction.getInstance());
+        
+        final Collection<AbstractFile> selectedFilesList =
+                new HashSet<>(Utilities.actionsGlobalContext().lookupAll(AbstractFile.class));
+        if(selectedFilesList.size() == 1) {
+            actionsList.add(DeleteFileContentTagAction.getInstance());
+        }
+        
+        actionsList.addAll(ContextMenuExtensionPoint.getActions());
+        return actionsList;
     }
 
     @Override
     public List<? extends Action> visit(final VirtualDirectory d) {
-        List<Action> actions = new ArrayList<>();
+        List<Action> actionsList = new ArrayList<>();
         if (!d.isDataSource()) {
-            actions.add(AddContentTagAction.getInstance());
+            actionsList.add(AddContentTagAction.getInstance());
+            
+            final Collection<AbstractFile> selectedFilesList =
+                    new HashSet<>(Utilities.actionsGlobalContext().lookupAll(AbstractFile.class));
+            if(selectedFilesList.size() == 1) {
+                actionsList.add(DeleteFileContentTagAction.getInstance());
+            }
         }
-        actions.add(ExtractAction.getInstance());
-        actions.addAll(ContextMenuExtensionPoint.getActions());
-        return actions;
+        actionsList.add(ExtractAction.getInstance());
+        actionsList.add(ExportCSVAction.getInstance());
+        actionsList.addAll(ContextMenuExtensionPoint.getActions());
+        return actionsList;
+    }
+    
+    @Override
+    public List<? extends Action> visit(final LocalDirectory d) {
+        List<Action> actionsList = new ArrayList<>();
+        if (!d.isDataSource()) {
+            actionsList.add(AddContentTagAction.getInstance());
+            
+            final Collection<AbstractFile> selectedFilesList =
+                    new HashSet<>(Utilities.actionsGlobalContext().lookupAll(AbstractFile.class));
+            if(selectedFilesList.size() == 1) {
+                actionsList.add(DeleteFileContentTagAction.getInstance());
+            }
+        }
+        actionsList.add(ExtractAction.getInstance());
+        actionsList.add(ExportCSVAction.getInstance());
+        actionsList.addAll(ContextMenuExtensionPoint.getActions());
+        return actionsList;
     }
 
     @Override
     public List<? extends Action> visit(final DerivedFile d) {
-        List<Action> actions = new ArrayList<>();
-        actions.add(ExtractAction.getInstance());
-        actions.add(AddContentTagAction.getInstance());
-        actions.addAll(ContextMenuExtensionPoint.getActions());
-        return actions;
+        List<Action> actionsList = new ArrayList<>();
+        actionsList.add(ExtractAction.getInstance());
+        actionsList.add(ExportCSVAction.getInstance());
+        actionsList.add(AddContentTagAction.getInstance());
+        
+        final Collection<AbstractFile> selectedFilesList =
+                new HashSet<>(Utilities.actionsGlobalContext().lookupAll(AbstractFile.class));
+        if(selectedFilesList.size() == 1) {
+            actionsList.add(DeleteFileContentTagAction.getInstance());
+        }
+        
+        actionsList.addAll(ContextMenuExtensionPoint.getActions());
+        return actionsList;
     }
 
     @Override
     public List<? extends Action> visit(final LocalFile d) {
-        List<Action> actions = new ArrayList<>();
-        actions.add(ExtractAction.getInstance());
-        actions.add(AddContentTagAction.getInstance());
-        actions.addAll(ContextMenuExtensionPoint.getActions());
-        return actions;
+        List<Action> actionsList = new ArrayList<>();
+        actionsList.add(ExtractAction.getInstance());
+        actionsList.add(ExportCSVAction.getInstance());
+        actionsList.add(AddContentTagAction.getInstance());
+        
+        final Collection<AbstractFile> selectedFilesList =
+                new HashSet<>(Utilities.actionsGlobalContext().lookupAll(AbstractFile.class));
+        if(selectedFilesList.size() == 1) {
+            actionsList.add(DeleteFileContentTagAction.getInstance());
+        }
+        
+        actionsList.addAll(ContextMenuExtensionPoint.getActions());
+        return actionsList;
     }
 
     @Override
     public List<? extends Action> visit(final org.sleuthkit.datamodel.File d) {
-        List<Action> actions = new ArrayList<>();
-        actions.add(ExtractAction.getInstance());
-        actions.add(AddContentTagAction.getInstance());
-        actions.addAll(ContextMenuExtensionPoint.getActions());
-        return actions;
+        List<Action> actionsList = new ArrayList<>();
+        actionsList.add(ExtractAction.getInstance());
+        actionsList.add(ExportCSVAction.getInstance());
+        actionsList.add(AddContentTagAction.getInstance());
+        
+        final Collection<AbstractFile> selectedFilesList =
+                new HashSet<>(Utilities.actionsGlobalContext().lookupAll(AbstractFile.class));
+        if(selectedFilesList.size() == 1) {
+            actionsList.add(DeleteFileContentTagAction.getInstance());
+        }
+        
+        actionsList.addAll(ContextMenuExtensionPoint.getActions());
+        return actionsList;
     }
 
     @Override

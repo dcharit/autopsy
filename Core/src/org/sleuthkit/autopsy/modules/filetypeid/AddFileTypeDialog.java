@@ -1,15 +1,15 @@
 /*
  * Autopsy Forensic Browser
- * 
- * Copyright 2011-2016 Basis Technology Corp.
+ *
+ * Copyright 2011-2020 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- * 
+ *
  *     http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -20,7 +20,6 @@ package org.sleuthkit.autopsy.modules.filetypeid;
 
 import java.awt.BorderLayout;
 import java.awt.Dimension;
-import java.awt.Toolkit;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.awt.event.WindowAdapter;
@@ -30,14 +29,15 @@ import java.beans.PropertyChangeListener;
 import javax.swing.BoxLayout;
 import javax.swing.JButton;
 import javax.swing.JDialog;
-import javax.swing.JFrame;
 import javax.swing.JPanel;
 import org.openide.util.NbBundle;
 import org.openide.util.NbBundle.Messages;
+import org.openide.windows.WindowManager;
 
 /**
  * Dialog used for editing or adding file types.
  */
+@SuppressWarnings("PMD.SingularField") // UI widgets cause lots of false positives
 class AddFileTypeDialog extends JDialog {
 
     /**
@@ -50,20 +50,21 @@ class AddFileTypeDialog extends JDialog {
     }
 
     private static final long serialVersionUID = 1L;
+    private static final Dimension BUTTON_SIZE = new Dimension(85, 23);
     private FileType fileType;
-    private AddFileTypePanel addMimeTypePanel;
+    final private AddFileTypePanel addMimeTypePanel;
     private BUTTON_PRESSED result;
     private JButton okButton;
-    private JButton closeButton;
+    private JButton cancelButton;
 
     /**
      * Creates a dialog for creating a file type
      */
     @Messages({"AddMimeTypedialog.title=File Type"})
-    public AddFileTypeDialog() {
-        super(new JFrame(Bundle.AddMimeTypedialog_title()), Bundle.AddMimeTypedialog_title(), true);
+    AddFileTypeDialog() {
+        super(WindowManager.getDefault().getMainWindow(), Bundle.AddMimeTypedialog_title(), true);
         addMimeTypePanel = new AddFileTypePanel();
-        this.display(true);
+        init();
     }
 
     /**
@@ -71,31 +72,20 @@ class AddFileTypeDialog extends JDialog {
      *
      * @param fileType The file type to edit
      */
-    public AddFileTypeDialog(FileType fileType) {
-        super(new JFrame(Bundle.AddMimeTypedialog_title()), Bundle.AddMimeTypedialog_title(), true);
+    AddFileTypeDialog(FileType fileType) {
+        super(WindowManager.getDefault().getMainWindow(), Bundle.AddMimeTypedialog_title(), true);
         addMimeTypePanel = new AddFileTypePanel(fileType);
-        this.display(false);
+        init();
     }
 
     /**
-     * Displays the add file type dialog.
-     *
-     * @param add Whether or not this is an edit or a new window.
+     * Do initialization of dialog components.
      */
-    @NbBundle.Messages({
-        "AddMimeTypeDialog.addButton.title=Add",
-        "AddMimeTypeDialog.addButton.title2=Done",
+        @NbBundle.Messages({
+        "AddMimeTypeDialog.addButton.title=OK",
         "AddMimeTypeDialog.cancelButton.title=Cancel"})
-    void display(boolean add) {
+    private void init() {
         setLayout(new BorderLayout());
-
-        /**
-         * Center the dialog.
-         */
-        Dimension screenDimension = Toolkit.getDefaultToolkit().getScreenSize();
-        int width = this.getSize().width;
-        int height = this.getSize().height;
-        setLocation((screenDimension.width - width) / 2, (screenDimension.height - height) / 2);
 
         /**
          * Get the default or saved ingest job settings for this context and use
@@ -103,36 +93,39 @@ class AddFileTypeDialog extends JDialog {
          */
         add(this.addMimeTypePanel, BorderLayout.PAGE_START);
 
-        // Add the add/done button.
-        if (add) {
-            okButton = new JButton(Bundle.AddMimeTypeDialog_addButton_title());
-        } else {
-            okButton = new JButton(Bundle.AddMimeTypeDialog_addButton_title2());
-        }
+        // Add the OK button
+        okButton = new JButton(Bundle.AddMimeTypeDialog_addButton_title());
         okButton.addActionListener(new ActionListener() {
             @Override
             public void actionPerformed(ActionEvent e) {
                 doButtonAction(true);
             }
         });
+        //setting both max and preffered size appears to be necessary to change the button size
+        okButton.setMaximumSize(BUTTON_SIZE);
+        okButton.setPreferredSize(BUTTON_SIZE);
 
         // Add a close button.
-        closeButton = new JButton(Bundle.AddMimeTypeDialog_cancelButton_title());
-        closeButton.addActionListener(new ActionListener() {
+        cancelButton = new JButton(Bundle.AddMimeTypeDialog_cancelButton_title());
+        cancelButton.addActionListener(new ActionListener() {
             @Override
             public void actionPerformed(ActionEvent e) {
                 doButtonAction(false);
             }
         });
+        //setting both max and preffered size appears to be necessary to change the button size
+        cancelButton.setMaximumSize(BUTTON_SIZE);
+        cancelButton.setPreferredSize(BUTTON_SIZE);
 
         // Put the buttons in their own panel, under the settings panel.
         JPanel buttonPanel = new JPanel();
         buttonPanel.setLayout(new BoxLayout(buttonPanel, BoxLayout.LINE_AXIS));
-        buttonPanel.add(new javax.swing.Box.Filler(new Dimension(10, 10), new Dimension(10, 10), new Dimension(10, 10)));
         buttonPanel.add(okButton);
-        buttonPanel.add(new javax.swing.Box.Filler(new Dimension(10, 10), new Dimension(10, 10), new Dimension(10, 10)));
-        buttonPanel.add(closeButton);
-        add(buttonPanel, BorderLayout.LINE_START);
+        buttonPanel.add(new javax.swing.Box.Filler(new Dimension(10, 35), new Dimension(10, 35), new Dimension(10, 35)));
+        buttonPanel.add(cancelButton);
+        buttonPanel.add(new javax.swing.Box.Filler(new Dimension(10, 35), new Dimension(10, 35), new Dimension(10, 35)));
+        buttonPanel.validate();
+        add(buttonPanel, BorderLayout.LINE_END);
 
         /**
          * Add a handler for when the dialog window is closed directly,
@@ -153,13 +146,23 @@ class AddFileTypeDialog extends JDialog {
             }
         });
         enableOkButton();
+        setResizable(false);
+        pack();
+    }
+
+    /**
+     * Displays the add file type dialog.
+     *
+     */
+    void display() {
+        /**
+         * Center the dialog.
+         */
+        setLocationRelativeTo(WindowManager.getDefault().getMainWindow());
         /**
          * Show the dialog.
          */
-        pack();
-        setResizable(false);
         setVisible(true);
-
     }
 
     /**
@@ -170,9 +173,9 @@ class AddFileTypeDialog extends JDialog {
      */
     private void doButtonAction(boolean okPressed) {
         if (okPressed) {
-            FileType fileType = addMimeTypePanel.getFileType();
-            if (fileType != null) {
-                this.fileType = fileType;
+            FileType fType = addMimeTypePanel.getFileType();
+            if (fType != null) {
+                this.fileType = fType;
                 this.result = BUTTON_PRESSED.OK;
                 setVisible(false);
             }
@@ -188,7 +191,7 @@ class AddFileTypeDialog extends JDialog {
      *
      * @return The file type
      */
-    public FileType getFileType() {
+    FileType getFileType() {
         return fileType;
     }
 
@@ -197,7 +200,7 @@ class AddFileTypeDialog extends JDialog {
      *
      * @return The button pressed to close the dialog
      */
-    public BUTTON_PRESSED getResult() {
+    BUTTON_PRESSED getResult() {
         return result;
     }
 

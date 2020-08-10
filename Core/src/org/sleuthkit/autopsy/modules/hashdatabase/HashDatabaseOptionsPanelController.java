@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011 Basis Technology Corp.
+ * Copyright 2011-2017 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -30,12 +30,12 @@ import org.sleuthkit.autopsy.coreutils.Logger;
 @OptionsPanelController.TopLevelRegistration(
         categoryName = "#OptionsCategory_Name_HashDatabase",
         iconBase = "org/sleuthkit/autopsy/modules/hashdatabase/options_icon.png",
-        position = 4,
+        position = 8,
         keywords = "#OptionsCategory_Keywords_HashDatabase",
         keywordsCategory = "HashDatabase",
         id = "HashDatabase")
 // moved messages to Bundle.properties
-//@org.openide.util.NbBundle.Messages({"OptionsCategory_Name_HashDatabase=Hash Database", "OptionsCategory_Keywords_HashDatabase=Hash Database"})
+//@org.openide.util.NbBundle.Messages({"OptionsCategory_Name_HashDatabase=Hash Set", "OptionsCategory_Keywords_HashDatabase=Hash Set"})
 public final class HashDatabaseOptionsPanelController extends OptionsPanelController {
 
     private HashLookupSettingsPanel panel;

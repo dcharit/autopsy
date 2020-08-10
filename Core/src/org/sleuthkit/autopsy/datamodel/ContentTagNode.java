@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2013-2016 Basis Technology Corp.
+ * Copyright 2013-2020 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,15 +18,16 @@
  */
 package org.sleuthkit.autopsy.datamodel;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.logging.Level;
 import javax.swing.Action;
-import org.openide.nodes.Children;
+import org.apache.commons.lang3.StringUtils;
 import org.openide.nodes.Sheet;
 import org.openide.util.NbBundle;
+import org.openide.util.NbBundle.Messages;
 import org.openide.util.lookup.Lookups;
-import org.sleuthkit.autopsy.actions.DeleteContentTagAction;
 import org.sleuthkit.autopsy.coreutils.Logger;
 import org.sleuthkit.autopsy.timeline.actions.ViewFileInTimelineAction;
 import org.sleuthkit.datamodel.AbstractFile;
@@ -37,24 +38,27 @@ import org.sleuthkit.datamodel.TskCoreException;
 /**
  * Instances of this class wrap ContentTag objects. In the Autopsy presentation
  * of the SleuthKit data model, they are leaf nodes of a tree consisting of
- * content and blackboard artifact tags, grouped first by tag type, then by tag
- * name.
+ * content and artifact tags, grouped first by tag type, then by tag name.
  */
-class ContentTagNode extends DisplayableItemNode {
+class ContentTagNode extends TagNode {
 
     private static final Logger LOGGER = Logger.getLogger(ContentTagNode.class.getName());
-
     private static final String ICON_PATH = "org/sleuthkit/autopsy/images/blue-tag-icon-16.png"; //NON-NLS
     private final ContentTag tag;
 
-    public ContentTagNode(ContentTag tag) {
-        super(Children.LEAF, Lookups.fixed(tag, tag.getContent()));
+    ContentTagNode(ContentTag tag) {
+        super(Lookups.fixed(tag, tag.getContent()), tag.getContent());
         super.setName(tag.getContent().getName());
         super.setDisplayName(tag.getContent().getName());
         this.setIconBaseWithExtension(ICON_PATH);
         this.tag = tag;
     }
 
+    @Messages({
+        "ContentTagNode.createSheet.origFileName=Original Name",
+        "ContentTagNode.createSheet.artifactMD5.displayName=MD5 Hash",
+        "ContentTagNode.createSheet.artifactMD5.name=MD5 Hash",
+        "ContentTagNode.createSheet.userName.text=User Name"})
     @Override
     protected Sheet createSheet() {
         Content content = tag.getContent();
@@ -73,15 +77,19 @@ class ContentTagNode extends DisplayableItemNode {
             properties = Sheet.createPropertiesSet();
             propertySheet.put(properties);
         }
-        properties.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "ContentTagNode.createSheet.file.name"),
+        properties.put(new NodeProperty<>(
+                NbBundle.getMessage(this.getClass(), "ContentTagNode.createSheet.file.name"),
                 NbBundle.getMessage(this.getClass(), "ContentTagNode.createSheet.file.displayName"),
                 "",
                 content.getName()));
-        properties.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "ContentTagNode.createSheet.filePath.name"),
+        addOriginalNameProp(properties);
+        properties.put(new NodeProperty<>(
+                NbBundle.getMessage(this.getClass(), "ContentTagNode.createSheet.filePath.name"),
                 NbBundle.getMessage(this.getClass(), "ContentTagNode.createSheet.filePath.displayName"),
                 "",
                 contentPath));
-        properties.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "ContentTagNode.createSheet.comment.name"),
+        properties.put(new NodeProperty<>(
+                NbBundle.getMessage(this.getClass(), "ContentTagNode.createSheet.comment.name"),
                 NbBundle.getMessage(this.getClass(), "ContentTagNode.createSheet.comment.displayName"),
                 "",
                 tag.getComment()));
@@ -89,52 +97,62 @@ class ContentTagNode extends DisplayableItemNode {
                 NbBundle.getMessage(this.getClass(), "ContentTagNode.createSheet.fileModifiedTime.displayName"),
                 "",
                 file != null ? ContentUtils.getStringTime(file.getMtime(), file) : ""));
-        properties.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "ContentTagNode.createSheet.fileChangedTime.name"),
+        properties.put(new NodeProperty<>(
+                NbBundle.getMessage(this.getClass(), "ContentTagNode.createSheet.fileChangedTime.name"),
                 NbBundle.getMessage(this.getClass(), "ContentTagNode.createSheet.fileChangedTime.displayName"),
                 "",
                 file != null ? ContentUtils.getStringTime(file.getCtime(), file) : ""));
-        properties.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "ContentTagNode.createSheet.fileAccessedTime.name"),
+        properties.put(new NodeProperty<>(
+                NbBundle.getMessage(this.getClass(), "ContentTagNode.createSheet.fileAccessedTime.name"),
                 NbBundle.getMessage(this.getClass(), "ContentTagNode.createSheet.fileAccessedTime.displayName"),
                 "",
                 file != null ? ContentUtils.getStringTime(file.getAtime(), file) : ""));
-        properties.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "ContentTagNode.createSheet.fileCreatedTime.name"),
+        properties.put(new NodeProperty<>(
+                NbBundle.getMessage(this.getClass(), "ContentTagNode.createSheet.fileCreatedTime.name"),
                 NbBundle.getMessage(this.getClass(), "ContentTagNode.createSheet.fileCreatedTime.displayName"),
                 "",
                 file != null ? ContentUtils.getStringTime(file.getCrtime(), file) : ""));
-        properties.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "ContentTagNode.createSheet.fileSize.name"),
+        properties.put(new NodeProperty<>(
+                NbBundle.getMessage(this.getClass(), "ContentTagNode.createSheet.fileSize.name"),
                 NbBundle.getMessage(this.getClass(), "ContentTagNode.createSheet.fileSize.displayName"),
                 "",
                 content.getSize()));
-
+        properties.put(new NodeProperty<>(
+                Bundle.ContentTagNode_createSheet_artifactMD5_name(),
+                Bundle.ContentTagNode_createSheet_artifactMD5_displayName(),
+                "",
+                file != null ? StringUtils.defaultString(file.getMd5Hash()) : ""));
+        properties.put(new NodeProperty<>(
+                NbBundle.getMessage(this.getClass(), "ContentTagNode.createSheet.userName.text"),
+                NbBundle.getMessage(this.getClass(), "ContentTagNode.createSheet.userName.text"),
+                "",
+                tag.getUserName()));
         return propertySheet;
     }
 
     @Override
     public Action[] getActions(boolean context) {
-        List<Action> actions = DataModelActionsFactory.getActions(tag.getContent(), false);
+        List<Action> actions = new ArrayList<>();
         actions.addAll(Arrays.asList(super.getActions(context)));
 
         AbstractFile file = getLookup().lookup(AbstractFile.class);
         if (file != null) {
             actions.add(ViewFileInTimelineAction.createViewFileAction(file));
         }
-        actions.add(null); // Adds a menu item separator.
-        actions.add(DeleteContentTagAction.getInstance());
+
+        actions.addAll(DataModelActionsFactory.getActions(tag, false));
+
         return actions.toArray(new Action[actions.size()]);
     }
 
     @Override
-    public <T> T accept(DisplayableItemNodeVisitor<T> v) {
-        return v.visit(this);
-    }
-
-    @Override
-    public boolean isLeafTypeNode() {
-        return true;
+    public <T> T accept(DisplayableItemNodeVisitor<T> visitor) {
+        return visitor.visit(this);
     }
 
     @Override
     public String getItemType() {
         return getClass().getName();
     }
+
 }

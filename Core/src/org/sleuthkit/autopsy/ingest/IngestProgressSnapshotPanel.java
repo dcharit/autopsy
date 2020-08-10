@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  * 
- * Copyright 2014 Basis Technology Corp.
+ * Copyright 2014-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -33,15 +33,18 @@ import org.openide.util.NbBundle;
 /**
  * A panel that displays ingest task progress snapshots.
  */
-public class IngestProgressSnapshotPanel extends javax.swing.JPanel {
+@SuppressWarnings("PMD.SingularField") // UI widgets cause lots of false positives
+class IngestProgressSnapshotPanel extends javax.swing.JPanel {
 
     private final JDialog parent;
+    private final IngestProgressSnapshotProvider snapshotProvider;
     private final IngestThreadActivitySnapshotsTableModel threadActivityTableModel;
     private final IngestJobTableModel jobTableModel;
     private final ModuleTableModel moduleTableModel;
 
-    IngestProgressSnapshotPanel(JDialog parent) {
+    IngestProgressSnapshotPanel(JDialog parent, IngestProgressSnapshotProvider snapshotProvider) {
         this.parent = parent;
+        this.snapshotProvider = snapshotProvider;
         threadActivityTableModel = new IngestThreadActivitySnapshotsTableModel();
         jobTableModel = new IngestJobTableModel();
         moduleTableModel = new ModuleTableModel();
@@ -105,7 +108,7 @@ public class IngestProgressSnapshotPanel extends javax.swing.JPanel {
         }
 
         private void refresh() {
-            snapshots = IngestManager.getInstance().getIngestThreadActivitySnapshots();
+            snapshots = snapshotProvider.getIngestThreadActivitySnapshots();
             fireTableDataChanged();
         }
 
@@ -150,7 +153,7 @@ public class IngestProgressSnapshotPanel extends javax.swing.JPanel {
                     cellValue = DurationFormatUtils.formatDurationHMS(elapsedTime);
                     break;
                 case 6:
-                    cellValue = snapshot.getJobId();
+                    cellValue = snapshot.getIngestJobId();
                     break;
                 default:
                     cellValue = null;
@@ -179,15 +182,17 @@ public class IngestProgressSnapshotPanel extends javax.swing.JPanel {
             NbBundle.getMessage(this.getClass(),
             "IngestJobTableModel.colName.rootQueued"),
             NbBundle.getMessage(this.getClass(),
+            "IngestJobTableModel.colName.streamingQueued"),
+            NbBundle.getMessage(this.getClass(),
             "IngestJobTableModel.colName.dsQueued")};
-        private List<DataSourceIngestJob.Snapshot> jobSnapshots;
+        private List<Snapshot> jobSnapshots;
 
         private IngestJobTableModel() {
             refresh();
         }
 
         private void refresh() {
-            jobSnapshots = IngestManager.getInstance().getIngestJobSnapshots();
+            jobSnapshots = snapshotProvider.getIngestJobSnapshots();
             fireTableDataChanged();
         }
 
@@ -208,7 +213,7 @@ public class IngestProgressSnapshotPanel extends javax.swing.JPanel {
 
         @Override
         public Object getValueAt(int rowIndex, int columnIndex) {
-            DataSourceIngestJob.Snapshot snapShot = jobSnapshots.get(rowIndex);
+            Snapshot snapShot = jobSnapshots.get(rowIndex);
             Object cellValue;
             switch (columnIndex) {
                 case 0:
@@ -218,7 +223,7 @@ public class IngestProgressSnapshotPanel extends javax.swing.JPanel {
                     cellValue = snapShot.getDataSource();
                     break;
                 case 2:
-                    SimpleDateFormat dateFormat = new SimpleDateFormat("HH:mm:ss");
+                    SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy/MM/dd HH:mm:ss");
                     cellValue = dateFormat.format(new Date(snapShot.getJobStartTime()));
                     break;
                 case 3:
@@ -240,6 +245,9 @@ public class IngestProgressSnapshotPanel extends javax.swing.JPanel {
                     cellValue = snapShot.getRootQueueSize();
                     break;
                 case 9:
+                    cellValue = snapShot.getStreamingQueueSize();
+                    break;
+                case 10:
                     cellValue = snapShot.getDsQueueSize();
                     break;
                 default:
@@ -299,7 +307,7 @@ public class IngestProgressSnapshotPanel extends javax.swing.JPanel {
         }
 
         private void refresh() {
-            Map<String, Long> moduleStatMap = IngestManager.getInstance().getModuleRunTimes();
+            Map<String, Long> moduleStatMap = snapshotProvider.getModuleRunTimes();
             moduleStats.clear();
             totalTime = 0;
             for (String k : moduleStatMap.keySet()) {

@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011 Basis Technology Corp.
+ * Copyright 2011-2019 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,42 +21,49 @@ package org.sleuthkit.autopsy.datamodel;
 import java.beans.PropertyChangeEvent;
 import java.beans.PropertyChangeListener;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Observable;
 import java.util.Observer;
+import java.util.Set;
 import java.util.logging.Level;
-import org.openide.nodes.AbstractNode;
+import java.util.stream.Collectors;
+import org.apache.commons.lang.StringUtils;
 import org.openide.nodes.ChildFactory;
 import org.openide.nodes.Children;
 import org.openide.nodes.Node;
 import org.openide.nodes.Sheet;
 import org.openide.util.NbBundle;
+import org.openide.util.NbBundle.Messages;
 import org.openide.util.lookup.Lookups;
 import org.sleuthkit.autopsy.casemodule.Case;
+import org.sleuthkit.autopsy.casemodule.NoCurrentCaseException;
 import org.sleuthkit.autopsy.core.UserPreferences;
 import org.sleuthkit.autopsy.coreutils.Logger;
+import org.sleuthkit.autopsy.datamodel.FileTypes.FileTypesKey;
 import org.sleuthkit.autopsy.ingest.IngestManager;
+import org.sleuthkit.autopsy.ingest.ModuleContentEvent;
 import org.sleuthkit.datamodel.AbstractFile;
-import org.sleuthkit.datamodel.Content;
-import org.sleuthkit.datamodel.ContentVisitor;
-import org.sleuthkit.datamodel.DerivedFile;
-import org.sleuthkit.datamodel.Directory;
-import org.sleuthkit.datamodel.File;
-import org.sleuthkit.datamodel.LayoutFile;
-import org.sleuthkit.datamodel.LocalFile;
 import org.sleuthkit.datamodel.SleuthkitCase;
 import org.sleuthkit.datamodel.TskCoreException;
 import org.sleuthkit.datamodel.TskData;
+import org.sleuthkit.autopsy.guiutils.RefreshThrottler;
 
 /**
  * Filters database results by file extension.
  */
- public final class FileTypesByExtension implements AutopsyVisitableItem {
+public final class FileTypesByExtension implements AutopsyVisitableItem {
 
+    private final static Logger logger = Logger.getLogger(FileTypesByExtension.class.getName());
+    private static final Set<IngestManager.IngestJobEvent> INGEST_JOB_EVENTS_OF_INTEREST = EnumSet.of(IngestManager.IngestJobEvent.COMPLETED, IngestManager.IngestJobEvent.CANCELLED);
+    private static final Set<IngestManager.IngestModuleEvent> INGEST_MODULE_EVENTS_OF_INTEREST = EnumSet.of(IngestManager.IngestModuleEvent.CONTENT_CHANGED);
     private final SleuthkitCase skCase;
+    private final FileTypes typesRoot;
 
-    public FileTypesByExtension(SleuthkitCase skCase) {
-        this.skCase = skCase;
+    public FileTypesByExtension(FileTypes typesRoot) {
+        this.skCase = typesRoot.getSleuthkitCase();
+        this.typesRoot = typesRoot;
     }
 
     public SleuthkitCase getSleuthkitCase() {
@@ -64,33 +71,89 @@ import org.sleuthkit.datamodel.TskData;
     }
 
     @Override
-    public <T> T accept(AutopsyItemVisitor<T> v) {
-        return v.visit(this);
+    public <T> T accept(AutopsyItemVisitor<T> visitor) {
+        return visitor.visit(this);
+    }
+
+    long filteringDataSourceObjId() {
+        return typesRoot.filteringDataSourceObjId();
     }
 
     /**
      * Listens for case and ingest invest. Updates observers when events are
      * fired. FileType and FileTypes nodes are all listening to this.
      */
-    private static class FileTypesByExtObservable extends Observable {
+    private class FileTypesByExtObservable extends Observable implements RefreshThrottler.Refresher {
+
+        private final PropertyChangeListener pcl;
+        private final Set<Case.Events> CASE_EVENTS_OF_INTEREST;
+        /**
+         * RefreshThrottler is used to limit the number of refreshes performed
+         * when CONTENT_CHANGED and DATA_ADDED ingest module events are
+         * received.
+         */
+        private final RefreshThrottler refreshThrottler = new RefreshThrottler(this);
 
         private FileTypesByExtObservable() {
             super();
-            IngestManager.getInstance().addIngestJobEventListener(pcl);
-            IngestManager.getInstance().addIngestModuleEventListener(pcl);
-            Case.addPropertyChangeListener(pcl);
+            this.CASE_EVENTS_OF_INTEREST = EnumSet.of(Case.Events.DATA_SOURCE_ADDED, Case.Events.CURRENT_CASE);
+            this.pcl = (PropertyChangeEvent evt) -> {
+                String eventType = evt.getPropertyName();
+                if (eventType.equals(IngestManager.IngestJobEvent.COMPLETED.toString())
+                        || eventType.equals(IngestManager.IngestJobEvent.CANCELLED.toString())
+                        || eventType.equals(Case.Events.DATA_SOURCE_ADDED.toString())) {
+
+                    /**
+                     * Checking for a current case is a stop gap measure until a
+                     * different way of handling the closing of cases is worked
+                     * out. Currently, remote events may be received for a case
+                     * that is already closed.
+                     */
+                    try {
+                        Case.getCurrentCaseThrows();
+                        typesRoot.updateShowCounts();
+                        update();
+                    } catch (NoCurrentCaseException notUsed) {
+                        /**
+                         * Case is closed, do nothing.
+                         */
+                    }
+                } else if (eventType.equals(Case.Events.CURRENT_CASE.toString())) {
+                    // case was closed. Remove listeners so that we don't get called with a stale case handle
+                    if (evt.getNewValue() == null) {
+                        removeListeners();
+                    }
+                }
+            };
+
+            IngestManager.getInstance().addIngestJobEventListener(INGEST_JOB_EVENTS_OF_INTEREST, pcl);
+            refreshThrottler.registerForIngestModuleEvents();
+            Case.addEventTypeSubscriber(CASE_EVENTS_OF_INTEREST, pcl);
         }
 
         private void removeListeners() {
             deleteObservers();
             IngestManager.getInstance().removeIngestJobEventListener(pcl);
-            IngestManager.getInstance().removeIngestModuleEventListener(pcl);
-            Case.removePropertyChangeListener(pcl);
+            refreshThrottler.unregisterEventListener();
+            Case.removeEventTypeSubscriber(CASE_EVENTS_OF_INTEREST, pcl);
         }
 
-        private final PropertyChangeListener pcl = (PropertyChangeEvent evt) -> {
+        private void update() {
+            setChanged();
+            notifyObservers();
+        }
+
+        @Override
+        public void refresh() {
+            typesRoot.updateShowCounts();
+            update();
+        }
+
+        @Override
+        public boolean isRefreshRequired(PropertyChangeEvent evt) {
             String eventType = evt.getPropertyName();
-            if (eventType.equals(IngestManager.IngestModuleEvent.CONTENT_CHANGED.toString()) || eventType.equals(IngestManager.IngestJobEvent.COMPLETED.toString()) || eventType.equals(IngestManager.IngestJobEvent.CANCELLED.toString()) || eventType.equals(Case.Events.DATA_SOURCE_ADDED.toString())) {
+            if (eventType.equals(IngestManager.IngestModuleEvent.CONTENT_CHANGED.toString())) {
+
                 /**
                  * Checking for a current case is a stop gap measure until a
                  * different way of handling the closing of cases is worked out.
@@ -98,33 +161,40 @@ import org.sleuthkit.datamodel.TskData;
                  * already closed.
                  */
                 try {
-                    Case.getCurrentCase();
-                    update();
-                } catch (IllegalStateException notUsed) {
+                    Case.getCurrentCaseThrows();
                     /**
-                     * Case is closed, do nothing.
+                     * If a new file has been added but does not have an
+                     * extension there is nothing to do.
                      */
-                }
-            } else if (eventType.equals(Case.Events.CURRENT_CASE.toString())) {
-                // case was closed. Remove listeners so that we don't get called with a stale case handle
-                if (evt.getNewValue() == null) {
-                    removeListeners();
+                    if ((evt.getOldValue() instanceof ModuleContentEvent) == false) {
+                        return false;
+                    }
+                    ModuleContentEvent moduleContentEvent = (ModuleContentEvent) evt.getOldValue();
+                    if ((moduleContentEvent.getSource() instanceof AbstractFile) == false) {
+                        return false;
+                    }
+                    AbstractFile abstractFile = (AbstractFile) moduleContentEvent.getSource();
+                    if (!abstractFile.getNameExtension().isEmpty()) {
+                        return true;
+                    }
+                } catch (NoCurrentCaseException ex) {
+                    /**
+                     * Case is closed, no refresh needed.
+                     */
+                    return false;
                 }
             }
-        };
-
-        private void update() {
-            setChanged();
-            notifyObservers();
+            return false;
         }
     }
+
+    private static final String FNAME = NbBundle.getMessage(FileTypesByExtNode.class, "FileTypesByExtNode.fname.text");
 
     /**
      * Node for root of file types view. Children are nodes for specific types.
      */
-    static class FileTypesByExtNode extends DisplayableItemNode {
+    class FileTypesByExtNode extends DisplayableItemNode {
 
-        private static final String FNAME = NbBundle.getMessage(FileTypesByExtNode.class, "FileTypesByExtNode.fname.text");
         private final FileTypesByExtension.RootFilter filter;
 
         /**
@@ -134,9 +204,7 @@ import org.sleuthkit.datamodel.TskData;
          *               something to provide a sub-node.
          */
         FileTypesByExtNode(SleuthkitCase skCase, FileTypesByExtension.RootFilter filter) {
-            super(Children.create(new FileTypesByExtNodeChildren(skCase, filter, null), true), Lookups.singleton(filter == null ? FNAME : filter.getName()));
-            this.filter = filter;
-            init();
+            this(skCase, filter, null);
         }
 
         /**
@@ -146,20 +214,19 @@ import org.sleuthkit.datamodel.TskData;
          * @param o      Observable that was created by a higher-level node that
          *               provides updates on events
          */
-        private FileTypesByExtNode(SleuthkitCase skCase, FileTypesByExtension.RootFilter filter, Observable o) {
-            super(Children.create(new FileTypesByExtNodeChildren(skCase, filter, o), true), Lookups.singleton(filter == null ? FNAME : filter.getName()));
-            this.filter = filter;
-            init();
-        }
+        private FileTypesByExtNode(SleuthkitCase skCase, FileTypesByExtension.RootFilter filter, FileTypesByExtObservable o) {
 
-        private void init() {
+            super(Children.create(new FileTypesByExtNodeChildren(skCase, filter, o), true),
+                    Lookups.singleton(filter == null ? FNAME : filter.getDisplayName()));
+            this.filter = filter;
+
             // root node of tree
             if (filter == null) {
                 super.setName(FNAME);
                 super.setDisplayName(FNAME);
             } // sub-node in file tree (i.e. documents, exec, etc.)
             else {
-                super.setName(filter.getName());
+                super.setName(filter.getDisplayName());
                 super.setDisplayName(filter.getDisplayName());
             }
             this.setIconBaseWithExtension("org/sleuthkit/autopsy/images/file_types.png"); //NON-NLS
@@ -171,20 +238,29 @@ import org.sleuthkit.datamodel.TskData;
         }
 
         @Override
-        public <T> T accept(DisplayableItemNodeVisitor<T> v) {
-            return v.visit(this);
+        public <T> T accept(DisplayableItemNodeVisitor<T> visitor) {
+            return visitor.visit(this);
         }
 
         @Override
         protected Sheet createSheet() {
-            Sheet s = super.createSheet();
-            Sheet.Set ss = s.get(Sheet.PROPERTIES);
-            if (ss == null) {
-                ss = Sheet.createPropertiesSet();
-                s.put(ss);
+            Sheet sheet = super.createSheet();
+            Sheet.Set sheetSet = sheet.get(Sheet.PROPERTIES);
+            if (sheetSet == null) {
+                sheetSet = Sheet.createPropertiesSet();
+                sheet.put(sheetSet);
             }
-            ss.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "FileTypesByExtNode.createSheet.name.name"), NbBundle.getMessage(this.getClass(), "FileTypesByExtNode.createSheet.name.displayName"), NbBundle.getMessage(this.getClass(), "FileTypesByExtNode.createSheet.name.desc"), getName()));
-            return s;
+            if (filter != null && (filter.equals(FileTypesByExtension.RootFilter.TSK_DOCUMENT_FILTER) || filter.equals(FileTypesByExtension.RootFilter.TSK_EXECUTABLE_FILTER))) {
+                String extensions = "";
+                for (String ext : filter.getFilter()) {
+                    extensions += "'" + ext + "', ";
+                }
+                extensions = extensions.substring(0, extensions.lastIndexOf(','));
+                sheetSet.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "FileTypesByExtNode.createSheet.fileExt.name"), NbBundle.getMessage(this.getClass(), "FileTypesByExtNode.createSheet.fileExt.displayName"), NbBundle.getMessage(this.getClass(), "FileTypesByExtNode.createSheet.fileExt.desc"), extensions));
+            } else {
+                sheetSet.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "FileTypesByExtNode.createSheet.name.name"), NbBundle.getMessage(this.getClass(), "FileTypesByExtNode.createSheet.name.displayName"), NbBundle.getMessage(this.getClass(), "FileTypesByExtNode.createSheet.name.desc"), getDisplayName()));
+            }
+            return sheet;
         }
 
         @Override
@@ -202,67 +278,66 @@ import org.sleuthkit.datamodel.TskData;
             return getClass().getName();
         }
 
-        private static class FileTypesByExtNodeChildren extends ChildFactory<FileTypesByExtension.SearchFilterInterface> {
+    }
 
-            private final SleuthkitCase skCase;
-            private final FileTypesByExtension.RootFilter filter;
-            private final Observable notifier;
+    private class FileTypesByExtNodeChildren extends ChildFactory<FileTypesByExtension.SearchFilterInterface> {
 
-            /**
-             *
-             * @param skCase
-             * @param filter Is null for root node
-             * @param o      Observable that provides updates based on events
-             *               being fired (or null if one needs to be created)
-             */
-            private FileTypesByExtNodeChildren(SleuthkitCase skCase, FileTypesByExtension.RootFilter filter, Observable o) {
-                super();
-                this.skCase = skCase;
-                this.filter = filter;
-                if (o == null) {
-                    this.notifier = new FileTypesByExtObservable();
-                } else {
-                    this.notifier = o;
-                }
-            }
+        private final SleuthkitCase skCase;
+        private final FileTypesByExtension.RootFilter filter;
+        private final FileTypesByExtObservable notifier;
 
-            @Override
-            protected boolean createKeys(List<FileTypesByExtension.SearchFilterInterface> list) {
-                // root node
-                if (filter == null) {
-                    list.addAll(Arrays.asList(FileTypesByExtension.RootFilter.values()));
-                } // document and executable has another level of nodes
-                else if (filter.equals(FileTypesByExtension.RootFilter.TSK_DOCUMENT_FILTER)) {
-                    list.addAll(Arrays.asList(FileTypesByExtension.DocumentFilter.values()));
-                } else if (filter.equals(FileTypesByExtension.RootFilter.TSK_EXECUTABLE_FILTER)) {
-                    list.addAll(Arrays.asList(FileTypesByExtension.ExecutableFilter.values()));
-                }
-                return true;
-            }
-
-            @Override
-            protected Node createNodeForKey(FileTypesByExtension.SearchFilterInterface key) {
-                // make new nodes for the sub-nodes
-                if (key.getName().equals(FileTypesByExtension.RootFilter.TSK_DOCUMENT_FILTER.getName())) {
-                    return new FileTypesByExtNode(skCase, FileTypesByExtension.RootFilter.TSK_DOCUMENT_FILTER, notifier);
-                } else if (key.getName().equals(FileTypesByExtension.RootFilter.TSK_EXECUTABLE_FILTER.getName())) {
-                    return new FileTypesByExtNode(skCase, FileTypesByExtension.RootFilter.TSK_EXECUTABLE_FILTER, notifier);
-                } else {
-                    return new FileExtensionNode(key, skCase, notifier);
-                }
+        /**
+         *
+         * @param skCase
+         * @param filter Is null for root node
+         * @param o      Observable that provides updates based on events being
+         *               fired (or null if one needs to be created)
+         */
+        private FileTypesByExtNodeChildren(SleuthkitCase skCase, FileTypesByExtension.RootFilter filter, FileTypesByExtObservable o) {
+            super();
+            this.skCase = skCase;
+            this.filter = filter;
+            if (o == null) {
+                this.notifier = new FileTypesByExtObservable();
+            } else {
+                this.notifier = o;
             }
         }
 
+        @Override
+        protected boolean createKeys(List<FileTypesByExtension.SearchFilterInterface> list) {
+            // root node
+            if (filter == null) {
+                list.addAll(Arrays.asList(FileTypesByExtension.RootFilter.values()));
+            } // document and executable has another level of nodes
+            else if (filter.equals(FileTypesByExtension.RootFilter.TSK_DOCUMENT_FILTER)) {
+                list.addAll(Arrays.asList(FileTypesByExtension.DocumentFilter.values()));
+            } else if (filter.equals(FileTypesByExtension.RootFilter.TSK_EXECUTABLE_FILTER)) {
+                list.addAll(Arrays.asList(FileTypesByExtension.ExecutableFilter.values()));
+            }
+            return true;
+        }
+
+        @Override
+        protected Node createNodeForKey(FileTypesByExtension.SearchFilterInterface key) {
+            // make new nodes for the sub-nodes
+            if (key.getName().equals(FileTypesByExtension.RootFilter.TSK_DOCUMENT_FILTER.getName())) {
+                return new FileTypesByExtNode(skCase, FileTypesByExtension.RootFilter.TSK_DOCUMENT_FILTER, notifier);
+            } else if (key.getName().equals(FileTypesByExtension.RootFilter.TSK_EXECUTABLE_FILTER.getName())) {
+                return new FileTypesByExtNode(skCase, FileTypesByExtension.RootFilter.TSK_EXECUTABLE_FILTER, notifier);
+            } else {
+                return new FileExtensionNode(key, skCase, notifier);
+            }
+        }
     }
 
     /**
      * Node for a specific file type / extension. Children of it will be the
      * files of that type.
      */
-    static class FileExtensionNode extends DisplayableItemNode {
+    final class FileExtensionNode extends FileTypes.BGCountUpdatingNode {
 
-        FileTypesByExtension.SearchFilterInterface filter;
-        SleuthkitCase skCase;
+        private final FileTypesByExtension.SearchFilterInterface filter;
 
         /**
          *
@@ -271,55 +346,40 @@ import org.sleuthkit.datamodel.TskData;
          * @param o      Observable that sends updates when the child factories
          *               should refresh
          */
-        FileExtensionNode(FileTypesByExtension.SearchFilterInterface filter, SleuthkitCase skCase, Observable o) {
-            super(Children.create(new FileExtensionNodeChildren(filter, skCase, o), true), Lookups.singleton(filter.getDisplayName()));
+        FileExtensionNode(FileTypesByExtension.SearchFilterInterface filter, SleuthkitCase skCase, FileTypesByExtObservable o) {
+            super(typesRoot, Children.create(new FileExtensionNodeChildren(filter, skCase, o, filter.getDisplayName()), true),
+                    Lookups.singleton(filter.getDisplayName()));
             this.filter = filter;
-            this.skCase = skCase;
-            init();
-            o.addObserver(new ByExtNodeObserver());
-        }
-
-        private void init() {
-            super.setName(filter.getName());
+            super.setName(filter.getDisplayName());
             updateDisplayName();
             this.setIconBaseWithExtension("org/sleuthkit/autopsy/images/file-filter-icon.png"); //NON-NLS
-        }
 
-        // update the display name when new events are fired
-        private class ByExtNodeObserver implements Observer {
-
-            @Override
-            public void update(Observable o, Object arg) {
-                updateDisplayName();
-            }
-        }
-
-        private void updateDisplayName() {
-            final long count = FileExtensionNodeChildren.calculateItems(skCase, filter);
-            super.setDisplayName(filter.getDisplayName() + " (" + count + ")");
+            o.addObserver(this);
         }
 
         @Override
-        public <T> T accept(DisplayableItemNodeVisitor<T> v) {
-            return v.visit(this);
+        public <T> T accept(DisplayableItemNodeVisitor<T> visitor) {
+            return visitor.visit(this);
         }
 
         @Override
         protected Sheet createSheet() {
-            Sheet s = super.createSheet();
-            Sheet.Set ss = s.get(Sheet.PROPERTIES);
-            if (ss == null) {
-                ss = Sheet.createPropertiesSet();
-                s.put(ss);
+            Sheet sheet = super.createSheet();
+            Sheet.Set sheetSet = sheet.get(Sheet.PROPERTIES);
+            if (sheetSet == null) {
+                sheetSet = Sheet.createPropertiesSet();
+                sheet.put(sheetSet);
             }
-            ss.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "FileTypesByExtNode.createSheet.filterType.name"), NbBundle.getMessage(this.getClass(), "FileTypesByExtNode.createSheet.filterType.displayName"), NbBundle.getMessage(this.getClass(), "FileTypesByExtNode.createSheet.filterType.desc"), filter.getDisplayName()));
-            String extensions = "";
-            for (String ext : filter.getFilter()) {
-                extensions += "'" + ext + "', ";
-            }
-            extensions = extensions.substring(0, extensions.lastIndexOf(','));
-            ss.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "FileTypesByExtNode.createSheet.fileExt.name"), NbBundle.getMessage(this.getClass(), "FileTypesByExtNode.createSheet.fileExt.displayName"), NbBundle.getMessage(this.getClass(), "FileTypesByExtNode.createSheet.fileExt.desc"), extensions));
-            return s;
+            sheetSet.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "FileTypesByExtNode.createSheet.filterType.name"),
+                    NbBundle.getMessage(this.getClass(), "FileTypesByExtNode.createSheet.filterType.displayName"),
+                    NbBundle.getMessage(this.getClass(), "FileTypesByExtNode.createSheet.filterType.desc"),
+                    filter.getDisplayName()));
+
+            sheetSet.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "FileTypesByExtNode.createSheet.fileExt.name"),
+                    NbBundle.getMessage(this.getClass(), "FileTypesByExtNode.createSheet.fileExt.displayName"),
+                    NbBundle.getMessage(this.getClass(), "FileTypesByExtNode.createSheet.fileExt.desc"),
+                    String.join(", ", filter.getFilter())));
+            return sheet;
         }
 
         @Override
@@ -337,132 +397,100 @@ import org.sleuthkit.datamodel.TskData;
             return DisplayableItemNode.FILE_PARENT_NODE_KEY;
         }
 
+        @Override
+        String getDisplayNameBase() {
+            return filter.getDisplayName();
+        }
+
+        @Override
+        long calculateChildCount() throws TskCoreException {
+            return skCase.countFilesWhere(createQuery(filter));
+        }
+    }
+
+    private String createQuery(FileTypesByExtension.SearchFilterInterface filter) {
+        if (filter.getFilter().isEmpty()) {
+            // We should never be given a search filter without extensions
+            // but if we are it is clearly a programming error so we throw 
+            // an IllegalArgumentException.
+            throw new IllegalArgumentException("Empty filter list passed to createQuery()"); // NON-NLS
+        }
+
+        return "(dir_type = " + TskData.TSK_FS_NAME_TYPE_ENUM.REG.getValue() + ")"
+                + (UserPreferences.hideKnownFilesInViewsTree()
+                ? " AND (known IS NULL OR known != " + TskData.FileKnown.KNOWN.getFileKnownValue() + ")"
+                : " ")
+                + (filteringDataSourceObjId() > 0
+                        ? " AND data_source_obj_id = " + filteringDataSourceObjId()
+                        : " ")
+                + " AND (extension IN (" + filter.getFilter().stream()
+                        .map(String::toLowerCase)
+                        .map(s -> "'" + StringUtils.substringAfter(s, ".") + "'")
+                        .collect(Collectors.joining(", ")) + "))";
+    }
+
+    /**
+     * Child node factory for a specific file type - does the database query.
+     */
+    private class FileExtensionNodeChildren extends BaseChildFactory<FileTypesKey> implements Observer {
+
+        private final SleuthkitCase skCase;
+        private final FileTypesByExtension.SearchFilterInterface filter;
+        private final Observable notifier;
+
         /**
-         * Child node factory for a specific file type - does the database
-         * query.
+         *
+         * @param filter   Extensions to display
+         * @param skCase
+         * @param o        Observable that will notify when there could be new
+         *                 data to display
+         * @param nodeName
          */
-        private static class FileExtensionNodeChildren extends ChildFactory.Detachable<Content> {
+        private FileExtensionNodeChildren(FileTypesByExtension.SearchFilterInterface filter, SleuthkitCase skCase, Observable o, String nodeName) {
+            super(nodeName, new ViewsKnownAndSlackFilter<>());
+            this.filter = filter;
+            this.skCase = skCase;
+            notifier = o;
+        }
 
-            private final SleuthkitCase skCase;
-            private final FileTypesByExtension.SearchFilterInterface filter;
-            private static final Logger LOGGER = Logger.getLogger(FileExtensionNodeChildren.class.getName());
-            private final Observable notifier;
-
-            /**
-             *
-             * @param filter Extensions to display
-             * @param skCase
-             * @param o      Observable that will notify when there could be new
-             *               data to display
-             */
-            private FileExtensionNodeChildren(FileTypesByExtension.SearchFilterInterface filter, SleuthkitCase skCase, Observable o) {
-                super();
-                this.filter = filter;
-                this.skCase = skCase;
-                notifier = o;
+        @Override
+        protected void onAdd() {
+            if (notifier != null) {
+                notifier.addObserver(this);
             }
+        }
 
-            @Override
-            protected void addNotify() {
-                if (notifier != null) {
-                    notifier.addObserver(observer);
-                }
+        @Override
+        protected void onRemove() {
+            if (notifier != null) {
+                notifier.deleteObserver(this);
             }
+        }
 
-            @Override
-            protected void removeNotify() {
-                if (notifier != null) {
-                    notifier.deleteObserver(observer);
-                }
+        @Override
+        public void update(Observable o, Object arg) {
+            refresh(false);
+        }
+
+        @Override
+        protected Node createNodeForKey(FileTypesKey key) {
+            return key.accept(new FileTypes.FileNodeCreationVisitor());
+        }
+
+        @Override
+        protected List<FileTypesKey> makeKeys() {
+            try {
+                return skCase.findAllFilesWhere(createQuery(filter))
+                        .stream().map(f -> new FileTypesKey(f)).collect(Collectors.toList());
+            } catch (TskCoreException ex) {
+                logger.log(Level.SEVERE, "Couldn't get search results", ex); //NON-NLS
             }
-            private final Observer observer = new FileTypeChildFactoryObserver();
-
-            // Cause refresh of children if there are changes
-            private class FileTypeChildFactoryObserver implements Observer {
-
-                @Override
-                public void update(Observable o, Object arg) {
-                    refresh(true);
-                }
-            }
-
-            /**
-             * Get children count without actually loading all nodes
-             *
-             * @return
-             */
-            private static long calculateItems(SleuthkitCase sleuthkitCase, FileTypesByExtension.SearchFilterInterface filter) {
-                try {
-                    return sleuthkitCase.countFilesWhere(createQuery(filter));
-                } catch (TskCoreException ex) {
-                    LOGGER.log(Level.SEVERE, "Error getting file search view count", ex); //NON-NLS
-                    return 0;
-                }
-            }
-
-            @Override
-            protected boolean createKeys(List<Content> list) {
-                try {
-                    List<AbstractFile> files = skCase.findAllFilesWhere(createQuery(filter));
-                    list.addAll(files);
-                } catch (TskCoreException ex) {
-                    LOGGER.log(Level.SEVERE, "Couldn't get search results", ex); //NON-NLS
-                }
-                return true;
-            }
-
-            private static String createQuery(FileTypesByExtension.SearchFilterInterface filter) {
-                StringBuilder query = new StringBuilder();
-                query.append("(dir_type = ").append(TskData.TSK_FS_NAME_TYPE_ENUM.REG.getValue()).append(")"); //NON-NLS
-                if (UserPreferences.hideKnownFilesInViewsTree()) {
-                    query.append(" AND (known IS NULL OR known != ").append(TskData.FileKnown.KNOWN.getFileKnownValue()).append(")"); //NON-NLS
-                }
-                query.append(" AND (NULL"); //NON-NLS
-                for (String s : filter.getFilter()) {
-                    query.append(" OR LOWER(name) LIKE LOWER('%").append(s).append("')"); //NON-NLS
-                }
-                query.append(')');
-                return query.toString();
-            }
-
-            @Override
-            protected Node createNodeForKey(Content key) {
-                return key.accept(new ContentVisitor.Default<AbstractNode>() {
-                    @Override
-                    public FileNode visit(File f) {
-                        return new FileNode(f, false);
-                    }
-
-                    @Override
-                    public DirectoryNode visit(Directory d) {
-                        return new DirectoryNode(d);
-                    }
-
-                    @Override
-                    public LayoutFileNode visit(LayoutFile lf) {
-                        return new LayoutFileNode(lf);
-                    }
-
-                    @Override
-                    public LocalFileNode visit(DerivedFile df) {
-                        return new LocalFileNode(df);
-                    }
-
-                    @Override
-                    public LocalFileNode visit(LocalFile lf) {
-                        return new LocalFileNode(lf);
-                    }
-
-                    @Override
-                    protected AbstractNode defaultVisit(Content di) {
-                        throw new UnsupportedOperationException(NbBundle.getMessage(this.getClass(), "FileTypeChildren.exception.notSupported.msg", di.toString()));
-                    }
-                });
-            }
+            return Collections.emptyList();
         }
     }
 
     // root node filters
+    @Messages({"FileTypeExtensionFilters.tskDatabaseFilter.text=Databases"})
     public static enum RootFilter implements AutopsyVisitableItem, SearchFilterInterface {
 
         TSK_IMAGE_FILTER(0, "TSK_IMAGE_FILTER", //NON-NLS
@@ -477,12 +505,15 @@ import org.sleuthkit.datamodel.TskData;
         TSK_ARCHIVE_FILTER(3, "TSK_ARCHIVE_FILTER", //NON-NLS
                 NbBundle.getMessage(FileTypesByExtension.class, "FileTypeExtensionFilters.tskArchiveFilter.text"),
                 FileTypeExtensions.getArchiveExtensions()),
-        TSK_DOCUMENT_FILTER(3, "TSK_DOCUMENT_FILTER", //NON-NLS
+        TSK_DATABASE_FILTER(4, "TSK_DATABASE_FILTER", //NON-NLS
+                NbBundle.getMessage(FileTypesByExtension.class, "FileTypeExtensionFilters.tskDatabaseFilter.text"),
+                FileTypeExtensions.getDatabaseExtensions()),
+        TSK_DOCUMENT_FILTER(5, "TSK_DOCUMENT_FILTER", //NON-NLS
                 NbBundle.getMessage(FileTypesByExtension.class, "FileTypeExtensionFilters.tskDocumentFilter.text"),
-                Arrays.asList(".doc", ".docx", ".pdf", ".xls", ".rtf", ".txt")), //NON-NLS
-        TSK_EXECUTABLE_FILTER(3, "TSK_EXECUTABLE_FILTER", //NON-NLS
+                Arrays.asList(".htm", ".html", ".doc", ".docx", ".odt", ".xls", ".xlsx", ".ppt", ".pptx", ".pdf", ".txt", ".rtf")), //NON-NLS
+        TSK_EXECUTABLE_FILTER(6, "TSK_EXECUTABLE_FILTER", //NON-NLS
                 NbBundle.getMessage(FileTypesByExtension.class, "FileTypeExtensionFilters.tskExecFilter.text"),
-                Arrays.asList(".exe", ".dll", ".bat", ".cmd", ".com")); //NON-NLS
+                FileTypeExtensions.getExecutableExtensions()); //NON-NLS
 
         private final int id;
         private final String name;
@@ -497,8 +528,8 @@ import org.sleuthkit.datamodel.TskData;
         }
 
         @Override
-        public <T> T accept(AutopsyItemVisitor<T> v) {
-            return v.visit(this);
+        public <T> T accept(AutopsyItemVisitor<T> visitor) {
+            return visitor.visit(this);
         }
 
         @Override
@@ -518,7 +549,7 @@ import org.sleuthkit.datamodel.TskData;
 
         @Override
         public List<String> getFilter() {
-            return this.filter;
+            return Collections.unmodifiableList(this.filter);
         }
     }
 
@@ -554,8 +585,8 @@ import org.sleuthkit.datamodel.TskData;
         }
 
         @Override
-        public <T> T accept(AutopsyItemVisitor<T> v) {
-            return v.visit(this);
+        public <T> T accept(AutopsyItemVisitor<T> visitor) {
+            return visitor.visit(this);
         }
 
         @Override
@@ -575,7 +606,7 @@ import org.sleuthkit.datamodel.TskData;
 
         @Override
         public List<String> getFilter() {
-            return this.filter;
+            return Collections.unmodifiableList(this.filter);
         }
     }
 
@@ -601,8 +632,8 @@ import org.sleuthkit.datamodel.TskData;
         }
 
         @Override
-        public <T> T accept(AutopsyItemVisitor<T> v) {
-            return v.visit(this);
+        public <T> T accept(AutopsyItemVisitor<T> visitor) {
+            return visitor.visit(this);
         }
 
         @Override
@@ -622,7 +653,7 @@ import org.sleuthkit.datamodel.TskData;
 
         @Override
         public List<String> getFilter() {
-            return this.filter;
+            return Collections.unmodifiableList(this.filter);
         }
     }
 
@@ -635,5 +666,6 @@ import org.sleuthkit.datamodel.TskData;
         public String getDisplayName();
 
         public List<String> getFilter();
+
     }
 }

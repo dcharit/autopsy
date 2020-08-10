@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011 Basis Technology Corp.
+ * Copyright 2011-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,22 +18,18 @@
  */
 package org.sleuthkit.autopsy.datamodel;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
 import org.openide.nodes.Sheet;
 import org.openide.util.NbBundle;
-import org.sleuthkit.autopsy.coreutils.Logger;
 import org.sleuthkit.datamodel.AbstractFile;
 
 /**
  * Abstract class that implements the commonality between File and Directory
  * Nodes (same properties).
  *
+ * @param <T> extends AbstractFile
  */
 public abstract class AbstractFsContentNode<T extends AbstractFile> extends AbstractAbstractFileNode<T> {
-
-    private static Logger logger = Logger.getLogger(AbstractFsContentNode.class.getName());
-
+    
     private boolean directoryBrowseMode;
     public static final String HIDE_PARENT = "hide_parent"; //NON-NLS
 
@@ -52,42 +48,24 @@ public abstract class AbstractFsContentNode<T extends AbstractFile> extends Abst
      */
     AbstractFsContentNode(T content, boolean directoryBrowseMode) {
         super(content);
-        this.setDisplayName(AbstractAbstractFileNode.getContentDisplayName(content));
+        this.setDisplayName(getContentDisplayName(content));
         this.directoryBrowseMode = directoryBrowseMode;
     }
-
+    
     public boolean getDirectoryBrowseMode() {
         return directoryBrowseMode;
     }
 
     @Override
+    @NbBundle.Messages("AbstractFsContentNode.noDesc.text=no description")
     protected Sheet createSheet() {
-        Sheet s = super.createSheet();
-        Sheet.Set ss = s.get(Sheet.PROPERTIES);
-        if (ss == null) {
-            ss = Sheet.createPropertiesSet();
-            s.put(ss);
-        }
-
-        Map<String, Object> map = new LinkedHashMap<String, Object>();
-        AbstractAbstractFileNode.fillPropertyMap(map, content);
-
-        AbstractFilePropertyType[] fsTypes = AbstractFilePropertyType.values();
-        final int FS_PROPS_LEN = fsTypes.length;
-        final String NO_DESCR = NbBundle.getMessage(this.getClass(), "AbstractFsContentNode.noDesc.text");
-        for (int i = 0; i < FS_PROPS_LEN; ++i) {
-            final AbstractFilePropertyType propType = AbstractFilePropertyType.values()[i];
-            final String propString = propType.toString();
-            ss.put(new NodeProperty<>(propString, propString, NO_DESCR, map.get(propString)));
-        }
+        Sheet sheet = super.createSheet();
+        Sheet.Set sheetSet = sheet.get(Sheet.PROPERTIES);
         if (directoryBrowseMode) {
-            ss.put(new NodeProperty<>(HIDE_PARENT, HIDE_PARENT, HIDE_PARENT, HIDE_PARENT));
+            sheetSet.put(new NodeProperty<>(HIDE_PARENT, HIDE_PARENT, HIDE_PARENT, HIDE_PARENT));
         }
 
-        // add tags property to the sheet
-        addTagProperty(ss);
-
-        return s;
+        return sheet;
     }
 
 }

@@ -127,7 +127,7 @@
                     <compile-dependency/>
                     <run-dependency>
                         <release-version>10</release-version>
-                        <specification-version>10.6</specification-version>
+                        <specification-version>10.20</specification-version>
                     </run-dependency>
                 </dependency>
                 <dependency>
@@ -136,14 +136,14 @@
                     <compile-dependency/>
                     <run-dependency>
                         <release-version>3</release-version>
-                        <specification-version>1.1</specification-version>
+                        <specification-version>1.4</specification-version>
                     </run-dependency>
                 </dependency>
             </module-dependencies>
             <public-packages/>
             <class-path-extension>
-                <runtime-relative-path>ext/sqlite-jdbc-3.7.8-SNAPSHOT.jar</runtime-relative-path>
-                <binary-origin>release/modules/ext/sqlite-jdbc-3.7.8-SNAPSHOT.jar</binary-origin>
+                <runtime-relative-path>ext/sqlite-jdbc-3.25.2.jar</runtime-relative-path>
+                <binary-origin>release/modules/ext/sqlite-jdbc-3.25.2.jar</binary-origin>
             </class-path-extension>
         </data>
     </configuration>

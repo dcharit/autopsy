@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011-2016 Basis Technology Corp.
+ * Copyright 2011-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -33,17 +33,22 @@ public class ResultsNode extends DisplayableItemNode {
     @NbBundle.Messages("ResultsNode.name.text=Results")
     public static final String NAME = Bundle.ResultsNode_name_text();
 
-    
-    
     public ResultsNode(SleuthkitCase sleuthkitCase) {
-        super(new RootContentChildren(Arrays.asList(
-                new ExtractedContent(sleuthkitCase),
-                new KeywordHits(sleuthkitCase),
-                new HashsetHits(sleuthkitCase),
-                new EmailExtracted(sleuthkitCase),
-                new InterestingHits(sleuthkitCase),
-                new Accounts(sleuthkitCase)
-        )), Lookups.singleton(NAME));
+        this(sleuthkitCase, 0);
+    }
+    
+    public ResultsNode(SleuthkitCase sleuthkitCase, long dsObjId) {
+        super(
+                
+                new RootContentChildren(Arrays.asList(
+                    new ExtractedContent(sleuthkitCase, dsObjId ),
+                    new KeywordHits(sleuthkitCase, dsObjId),  
+                    new HashsetHits(sleuthkitCase, dsObjId),
+                    new EmailExtracted(sleuthkitCase, dsObjId),
+                    new InterestingHits(sleuthkitCase, dsObjId ),
+                    new Accounts(sleuthkitCase, dsObjId) )
+                ),
+                Lookups.singleton(NAME));
         setName(NAME);
         setDisplayName(NAME);
         this.setIconBaseWithExtension("org/sleuthkit/autopsy/images/results.png"); //NON-NLS
@@ -55,8 +60,8 @@ public class ResultsNode extends DisplayableItemNode {
     }
 
     @Override
-    public <T> T accept(DisplayableItemNodeVisitor<T> v) {
-        return v.visit(this);
+    public <T> T accept(DisplayableItemNodeVisitor<T> visitor) {
+        return visitor.visit(this);
     }
 
     @Override
@@ -65,19 +70,19 @@ public class ResultsNode extends DisplayableItemNode {
         "ResultsNode.createSheet.name.displayName=Name",
         "ResultsNode.createSheet.name.desc=no description"})
     protected Sheet createSheet() {
-        Sheet s = super.createSheet();
-        Sheet.Set ss = s.get(Sheet.PROPERTIES);
-        if (ss == null) {
-            ss = Sheet.createPropertiesSet();
-            s.put(ss);
+        Sheet sheet = super.createSheet();
+        Sheet.Set sheetSet = sheet.get(Sheet.PROPERTIES);
+        if (sheetSet == null) {
+            sheetSet = Sheet.createPropertiesSet();
+            sheet.put(sheetSet);
         }
 
-        ss.put(new NodeProperty<>(Bundle.ResultsNode_createSheet_name_name(),
+        sheetSet.put(new NodeProperty<>(Bundle.ResultsNode_createSheet_name_name(),
                 Bundle.ResultsNode_createSheet_name_displayName(),
                 Bundle.ResultsNode_createSheet_name_desc(),
                 NAME
         ));
-        return s;
+        return sheet;
     }
 
     @Override

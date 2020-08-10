@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2003-2016 Basis Technology Corp.
+ * Copyright 2011-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,28 +23,36 @@ import java.awt.event.ActionListener;
 import java.awt.event.MouseEvent;
 import java.beans.PropertyChangeEvent;
 import java.beans.PropertyChangeListener;
+import java.util.ArrayList;
+import java.util.EnumSet;
+import java.util.List;
 import java.util.logging.Level;
-import org.sleuthkit.autopsy.coreutils.Logger;
 import javax.swing.SwingUtilities;
 import javax.swing.event.PopupMenuEvent;
 import javax.swing.event.PopupMenuListener;
 import org.sleuthkit.autopsy.casemodule.Case;
+import org.sleuthkit.autopsy.casemodule.NoCurrentCaseException;
 import org.sleuthkit.autopsy.core.RuntimeProperties;
+import org.sleuthkit.autopsy.coreutils.Logger;
+import org.sleuthkit.datamodel.DataSource;
+import org.sleuthkit.datamodel.TskCoreException;
 
 /**
  * A panel that provides a toolbar button for the dropdown keyword list search
  * panel and dropdown single keyword search panel. Displayed in the upper right
  * hand corner of the application by default.
  */
+@SuppressWarnings("PMD.SingularField") // UI widgets cause lots of false positives
 class DropdownToolbar extends javax.swing.JPanel {
 
     private static final long serialVersionUID = 1L;
-    private static final Logger LOGGER = Logger.getLogger(DropdownToolbar.class.getName());
+    private static final Logger logger = Logger.getLogger(DropdownToolbar.class.getName());
     private static DropdownToolbar instance;
     private SearchSettingsChangeListener searchSettingsChangeListener;
     private boolean active = false;
-    private DropdownSingleKeywordSearchPanel dropPanel = null;
-
+    private DropdownSingleTermSearchPanel dropPanel = null;
+    private DropdownListSearchPanel listsPanel = null;
+    private List<DataSource> dataSources = new ArrayList<>();
     /**
      * Gets the singleton panel that provides a toolbar button for the dropdown
      * keyword list search panel and dropdown single keyword search panel.
@@ -76,13 +84,13 @@ class DropdownToolbar extends javax.swing.JPanel {
     private void customizeComponents() {
         searchSettingsChangeListener = new SearchSettingsChangeListener();
         KeywordSearch.getServer().addServerActionListener(searchSettingsChangeListener);
-        Case.addPropertyChangeListener(searchSettingsChangeListener);
+        Case.addEventTypeSubscriber(EnumSet.of(Case.Events.CURRENT_CASE, Case.Events.DATA_SOURCE_ADDED), searchSettingsChangeListener);
 
-        DropdownListSearchPanel listsPanel = DropdownListSearchPanel.getDefault();
+        listsPanel = DropdownListSearchPanel.getDefault();
         listsPanel.addSearchButtonActionListener((ActionEvent e) -> {
             listsMenu.setVisible(false);
         });
-        
+        listsPanel.addPropertyChangeListener(searchSettingsChangeListener);
         // Adding border of six to account for menu border
         listsMenu.setSize(listsPanel.getPreferredSize().width + 6, listsPanel.getPreferredSize().height + 6);
         listsMenu.add(listsPanel);
@@ -103,7 +111,8 @@ class DropdownToolbar extends javax.swing.JPanel {
             }
         });
 
-        dropPanel = DropdownSingleKeywordSearchPanel.getDefault();
+        dropPanel = DropdownSingleTermSearchPanel.getDefault();
+        dropPanel.addPropertyChangeListener(searchSettingsChangeListener);
         dropPanel.addSearchButtonActionListener(new ActionListener() {
             @Override
             public void actionPerformed(ActionEvent e) {
@@ -132,26 +141,133 @@ class DropdownToolbar extends javax.swing.JPanel {
     }
 
     private void maybeShowListsPopup(MouseEvent evt) {
-        if (!active) {
+        if (!active || !listsButton.isEnabled()) {
             return;
         }
         if (evt != null && !SwingUtilities.isLeftMouseButton(evt)) {
             return;
         }
+        listsPanel.setDataSources(dataSources);
+        listsPanel.updateDataSourceListModel();
         listsMenu.show(listsButton, listsButton.getWidth() - listsMenu.getWidth(), listsButton.getHeight() - 1);
     }
 
     private void maybeShowSearchPopup(MouseEvent evt) {
-        if (!active) {
+        if (!active || !searchDropButton.isEnabled()) {
             return;
         }
         if (evt != null && !SwingUtilities.isLeftMouseButton(evt)) {
             return;
         }
+        dropPanel.setDataSources(dataSources);
+        dropPanel.updateDataSourceListModel();
         searchMenu.show(searchDropButton, searchDropButton.getWidth() - searchMenu.getWidth(), searchDropButton.getHeight() - 1);
     }
+
+    private class SearchSettingsChangeListener implements PropertyChangeListener {
+
+        @Override
+        public void propertyChange(PropertyChangeEvent evt) {
+            if (RuntimeProperties.runningWithGUI()) {
+                String changed = evt.getPropertyName();
+                if (changed.equals(Case.Events.CURRENT_CASE.toString())) {
+                    if (null != evt.getNewValue()) {
+                        boolean disableSearch = false;
+                        /*
+                         * A case has been opened.
+                         */
+                        try {
+                            Server server = KeywordSearch.getServer();
+                            if (server.coreIsOpen() == false) {
+                                disableSearch = true;
+                            }
+                            else {
+                                Index indexInfo = server.getIndexInfo();
+                                if (IndexFinder.getCurrentSolrVersion().equals(indexInfo.getSolrVersion())) {
+                                    /*
+                                     * Solr version is current, so check the Solr
+                                     * schema version and selectively enable the ad
+                                     * hoc search UI components.
+                                     */
+                                    boolean schemaIsCompatible = indexInfo.isCompatible(IndexFinder.getCurrentSchemaVersion());
+                                    listsButton.setEnabled(schemaIsCompatible);
+                                    searchDropButton.setEnabled(true);
+                                    dropPanel.setRegexSearchEnabled(schemaIsCompatible);
+                                    active = true;
+                                } else {
+                                    /*
+                                     * Unsupported Solr version, disable the ad hoc
+                                     * search UI components.
+                                     */
+                                    disableSearch = true;
+                                }
+                            }
+                        } catch (NoOpenCoreException ex) {
+                            /*
+                             * Error, disable the ad hoc search UI components.
+                             */
+                            logger.log(Level.SEVERE, "Error getting text index info", ex); //NON-NLS
+                            disableSearch = true;
+                        }
+                        
+                        //set the data source list
+                        try {
+                            dataSources = getDataSourceList();
+                        } catch (TskCoreException ex) {
+                            logger.log(Level.SEVERE, "Error getting text index info", ex); //NON-NLS
+                            disableSearch = true;
+                        } catch (NoCurrentCaseException ex) {
+                            logger.log(Level.SEVERE, "Exception while getting current case.", ex); //NON-NLS
+                            disableSearch = true;
+                        }
+                        if (disableSearch) {
+                            searchDropButton.setEnabled(false);
+                            listsButton.setEnabled(false);
+                            active = false;
+                        }
+                        
+                    } else {
+                        /*
+                         * A case has been closed.
+                         */
+                        dropPanel.clearSearchBox();
+                        searchDropButton.setEnabled(false);
+                        listsButton.setEnabled(false);
+                        active = false;
+                    }
+                } else if (changed.equals(Server.CORE_EVT)) {
+                    final Server.CORE_EVT_STATES state = (Server.CORE_EVT_STATES) evt.getNewValue();
+                    switch (state) {
+                        case STARTED:
+                            try {
+                                final int numIndexedFiles = KeywordSearch.getServer().queryNumIndexedFiles();
+                                KeywordSearch.fireNumIndexedFilesChange(null, numIndexedFiles);
+                            } catch (NoOpenCoreException | KeywordSearchModuleException ex) {
+                                logger.log(Level.SEVERE, "Error executing Solr query", ex); //NON-NLS
+                            }
+                            break;
+                        case STOPPED:
+                            break;
+                        default:
+                    }
+                } else if (changed.equals(Case.Events.DATA_SOURCE_ADDED.toString())) {
+                    DataSource newDataSource = (DataSource) evt.getNewValue();
+                    dataSources.add(newDataSource);
+                }
+            }
+        }
+    }
     
-    
+    /**
+     * Get a list of DataSource from case database
+     * @return A list of DataSource
+     * @throws NoCurrentCaseException
+     * @throws TskCoreException 
+     */
+    private synchronized List<DataSource> getDataSourceList() throws NoCurrentCaseException, TskCoreException {
+        Case openCase = Case.getCurrentCaseThrows();
+        return openCase.getSleuthkitCase().getDataSources();
+    }
     /**
      * This method is called from within the constructor to initialize the form.
      * WARNING: Do NOT modify this code. The content of this method is always
@@ -169,13 +285,13 @@ class DropdownToolbar extends javax.swing.JPanel {
 
         setOpaque(false);
 
-        listsButton.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/watchbutton-icon.png"))); // NOI18N NON-NLS
+        listsButton.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/watchbutton-icon.png"))); // NOI18N
         listsButton.setText(org.openide.util.NbBundle.getMessage(DropdownToolbar.class, "ListBundleName")); // NOI18N
         listsButton.setBorderPainted(false);
         listsButton.setContentAreaFilled(false);
         listsButton.setEnabled(false);
-        listsButton.setRolloverIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/watchbutton-icon-rollover.png"))); // NOI18N NON-NLS
-        listsButton.setRolloverSelectedIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/watchbutton-icon-pressed.png"))); // NOI18N NON-NLS
+        listsButton.setRolloverIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/watchbutton-icon-rollover.png"))); // NOI18N
+        listsButton.setRolloverSelectedIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/watchbutton-icon-pressed.png"))); // NOI18N
         listsButton.addMouseListener(new java.awt.event.MouseAdapter() {
             public void mousePressed(java.awt.event.MouseEvent evt) {
                 listsButtonMousePressed(evt);
@@ -187,16 +303,15 @@ class DropdownToolbar extends javax.swing.JPanel {
             }
         });
 
-        searchDropButton.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/searchbutton-icon.png"))); // NOI18N NON-NLS
+        searchDropButton.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/searchbutton-icon.png"))); // NOI18N
         searchDropButton.setText(org.openide.util.NbBundle.getMessage(DropdownToolbar.class, "KeywordSearchPanel.searchDropButton.text")); // NOI18N
         searchDropButton.setBorderPainted(false);
         searchDropButton.setContentAreaFilled(false);
         searchDropButton.setEnabled(false);
         searchDropButton.setMaximumSize(new java.awt.Dimension(146, 27));
         searchDropButton.setMinimumSize(new java.awt.Dimension(146, 27));
-        searchDropButton.setPreferredSize(new java.awt.Dimension(146, 27));
-        searchDropButton.setRolloverIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/searchbutton-icon-rollover.png"))); // NOI18N NON-NLS
-        searchDropButton.setRolloverSelectedIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/searchbutton-icon-pressed.png"))); // NOI18N NON-NLS
+        searchDropButton.setRolloverIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/searchbutton-icon-rollover.png"))); // NOI18N
+        searchDropButton.setRolloverSelectedIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/searchbutton-icon-pressed.png"))); // NOI18N
         searchDropButton.addMouseListener(new java.awt.event.MouseAdapter() {
             public void mousePressed(java.awt.event.MouseEvent evt) {
                 searchDropButtonMousePressed(evt);
@@ -213,8 +328,8 @@ class DropdownToolbar extends javax.swing.JPanel {
                 .addComponent(listsButton)
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                 .addComponent(jSeparator1, javax.swing.GroupLayout.PREFERRED_SIZE, 7, javax.swing.GroupLayout.PREFERRED_SIZE)
-                .addGap(0, 0, 0)
-                .addComponent(searchDropButton, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
+                .addGap(1, 1, 1)
+                .addComponent(searchDropButton, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
                 .addContainerGap())
         );
         layout.setVerticalGroup(
@@ -247,40 +362,5 @@ class DropdownToolbar extends javax.swing.JPanel {
     private javax.swing.JButton searchDropButton;
     private javax.swing.JPopupMenu searchMenu;
     // End of variables declaration//GEN-END:variables
-
-    private class SearchSettingsChangeListener implements PropertyChangeListener {
-
-        @Override
-        public void propertyChange(PropertyChangeEvent evt) {
-            String changed = evt.getPropertyName();
-            if (changed.equals(Case.Events.CURRENT_CASE.toString())) {
-                dropPanel.clearSearchBox();
-                setFields(null != evt.getNewValue() && RuntimeProperties.coreComponentsAreActive());
-            } else if (changed.equals(Server.CORE_EVT)) {
-                final Server.CORE_EVT_STATES state = (Server.CORE_EVT_STATES) evt.getNewValue();
-                switch (state) {
-                    case STARTED:
-                        try {
-                            final int numIndexedFiles = KeywordSearch.getServer().queryNumIndexedFiles();
-                            KeywordSearch.fireNumIndexedFilesChange(null, numIndexedFiles);
-                        } catch (NoOpenCoreException ex) {
-                            LOGGER.log(Level.SEVERE, "Error executing Solr query, {0}", ex); //NON-NLS
-                        } catch (KeywordSearchModuleException se) {
-                            LOGGER.log(Level.SEVERE, "Error executing Solr query, {0}", se.getMessage()); //NON-NLS
-                        }
-                        break;
-                    case STOPPED:
-                        break;
-                    default:
-                }
-            }
-        }
-
-        private void setFields(boolean enabled) {
-            searchDropButton.setEnabled(enabled);
-            listsButton.setEnabled(enabled);
-            active = enabled;
-        }
-    }
 
 }

@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011-2016 Basis Technology Corp.
+ * Copyright 2011-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.logging.Level;
 import org.openide.util.NbBundle;
 import org.sleuthkit.autopsy.casemodule.Case;
+import org.sleuthkit.autopsy.casemodule.NoCurrentCaseException;
 import org.sleuthkit.autopsy.casemodule.services.FileManager;
 import org.sleuthkit.autopsy.coreutils.Logger;
 import org.sleuthkit.autopsy.coreutils.MessageNotifyUtil;
@@ -99,7 +100,7 @@ class PhotoRecCarverOutputParser {
             NodeList fileRanges;
             Element entry;
             Path filePath;
-            FileManager fileManager = Case.getCurrentCase().getServices().getFileManager();
+            FileManager fileManager = Case.getCurrentCaseThrows().getServices().getFileManager();
 
             // create and initialize the list to put into the database
             List<CarvingResult.CarvedFile> carvedFiles = new ArrayList<>();
@@ -156,8 +157,8 @@ class PhotoRecCarverOutputParser {
                 }
             }
             return fileManager.addCarvedFiles(new CarvingResult(af, carvedFiles));
-        } catch (NumberFormatException | TskCoreException ex) {
-            logger.log(Level.SEVERE, "Error parsing PhotoRec output and inserting it into the database: {0}", ex); //NON-NLS
+        } catch (NumberFormatException | TskCoreException | NoCurrentCaseException ex) {
+            logger.log(Level.SEVERE, "Error parsing PhotoRec output and inserting it into the database", ex); //NON-NLS
         }
 
         List<LayoutFile> empty = Collections.emptyList();

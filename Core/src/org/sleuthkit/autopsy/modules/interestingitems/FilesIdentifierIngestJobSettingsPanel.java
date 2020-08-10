@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2014 Basis Technology Corp.
+ * Copyright 2014-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -26,7 +26,6 @@ import java.util.TreeMap;
 import javax.swing.JTable;
 import javax.swing.table.AbstractTableModel;
 import javax.swing.table.TableColumn;
-import org.openide.util.Exceptions;
 import org.openide.util.NbBundle.Messages;
 import org.sleuthkit.autopsy.coreutils.MessageNotifyUtil;
 import org.sleuthkit.autopsy.ingest.IngestModuleIngestJobSettings;
@@ -35,7 +34,9 @@ import org.sleuthkit.autopsy.ingest.IngestModuleIngestJobSettingsPanel;
 /**
  * Ingest job settings panel for interesting files identifier ingest modules.
  */
+@SuppressWarnings("PMD.SingularField") // UI widgets cause lots of false positives
 final class FilesIdentifierIngestJobSettingsPanel extends IngestModuleIngestJobSettingsPanel implements Observer {
+
     @Messages({
         "FilesIdentifierIngestJobSettingsPanel.updateError=Error updating interesting files sets settings file.",
         "FilesIdentifierIngestJobSettingsPanel.getError=Error getting interesting files sets from settings file."
@@ -62,7 +63,7 @@ final class FilesIdentifierIngestJobSettingsPanel extends IngestModuleIngestJobS
         // interesting file set definitions. This is used to keep this panel in
         // synch with changes made using the global settings/option panel for 
         // this module.
-        InterestingItemDefsManager.getInstance().addObserver(panel);
+        FilesSetsManager.getInstance().addObserver(panel);
 
         return panel;
     }
@@ -83,8 +84,8 @@ final class FilesIdentifierIngestJobSettingsPanel extends IngestModuleIngestJobS
          */
         List<FilesSetRow> filesSetRows = new ArrayList<>();
         try {
-            this.filesSetSnapshot = new TreeMap<>(InterestingItemDefsManager.getInstance().getInterestingFilesSets());
-        } catch (InterestingItemDefsManager.InterestingItemDefsManagerException ex) {
+            this.filesSetSnapshot = new TreeMap<>(FilesSetsManager.getInstance().getInterestingFilesSets());
+        } catch (FilesSetsManager.FilesSetsManagerException ex) {
             MessageNotifyUtil.Message.error(Bundle.FilesIdentifierIngestJobSettingsPanel_getError());
             this.filesSetSnapshot = new TreeMap<>();
         }
@@ -138,8 +139,8 @@ final class FilesIdentifierIngestJobSettingsPanel extends IngestModuleIngestJobS
         List<FilesSetRow> rowModels = new ArrayList<>();
         TreeMap<String, FilesSet> newFilesSetSnapshot;
         try {
-            newFilesSetSnapshot = new TreeMap<>(InterestingItemDefsManager.getInstance().getInterestingFilesSets());
-        } catch (InterestingItemDefsManager.InterestingItemDefsManagerException ex) {
+            newFilesSetSnapshot = new TreeMap<>(FilesSetsManager.getInstance().getInterestingFilesSets());
+        } catch (FilesSetsManager.FilesSetsManagerException ex) {
             MessageNotifyUtil.Message.error(Bundle.FilesIdentifierIngestJobSettingsPanel_updateError());
             return;
         }

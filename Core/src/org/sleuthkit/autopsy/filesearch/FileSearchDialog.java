@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  * 
- * Copyright 2011 Basis Technology Corp.
+ * Copyright 2011-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,41 +16,28 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-/*
- * FileSearchDialog.java
- *
- * Created on Mar 5, 2012, 1:57:33 PM
- */
 package org.sleuthkit.autopsy.filesearch;
 
-import org.openide.util.NbBundle;
-
-import java.awt.Dimension;
-import java.awt.Toolkit;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
-import javax.swing.JFrame;
+import org.openide.util.NbBundle;
 import org.openide.windows.WindowManager;
 
 /**
  * File search dialog
  */
+@SuppressWarnings("PMD.SingularField") // UI widgets cause lots of false positives
 class FileSearchDialog extends javax.swing.JDialog {
 
     /**
      * Creates new form FileSearchDialog
      */
     public FileSearchDialog() {
-        super(new JFrame(NbBundle.getMessage(FileSearchDialog.class, "FileSearchDialog.frame.title")),
+        super(WindowManager.getDefault().getMainWindow(),
                 NbBundle.getMessage(FileSearchDialog.class, "FileSearchDialog.frame.msg"), true);
         initComponents();
 
         setResizable(false);
-        Dimension screenDimension = Toolkit.getDefaultToolkit().getScreenSize();
-        double w = getSize().getWidth();
-        double h = getSize().getHeight();
-        setLocation((int) ((screenDimension.getWidth() - w) / 2), (int) ((screenDimension.getHeight() - h) / 2));
         this.setLocationRelativeTo(WindowManager.getDefault().getMainWindow());
         fileSearchPanel1.addListenerToAll(new ActionListener() {
 
@@ -92,3 +79,4 @@ class FileSearchDialog extends javax.swing.JDialog {
     private org.sleuthkit.autopsy.filesearch.FileSearchPanel fileSearchPanel1;
     // End of variables declaration//GEN-END:variables
 }
+

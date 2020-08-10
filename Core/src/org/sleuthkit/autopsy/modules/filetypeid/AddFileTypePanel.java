@@ -1,15 +1,15 @@
 /*
  * Autopsy Forensic Browser
- * 
- * Copyright 2011-2016 Basis Technology Corp.
+ *
+ * Copyright 2011-2020 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- * 
+ *
  *     http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -24,6 +24,8 @@ import javax.swing.DefaultListModel;
 import javax.swing.JOptionPane;
 import javax.swing.event.ListSelectionEvent;
 import javax.swing.event.ListSelectionListener;
+import org.apache.commons.lang.ArrayUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.openide.util.NbBundle;
 import org.openide.util.NbBundle.Messages;
 import static org.sleuthkit.autopsy.modules.filetypeid.AddFileTypePanel.EVENT.SIG_LIST_CHANGED;
@@ -33,6 +35,8 @@ import org.sleuthkit.autopsy.modules.filetypeid.FileType.Signature;
 /**
  * Panel for adding or editing file types.
  */
+@Messages("AddFileTypePanel.mimeFormatLabel.text=Form of MIME type should be: media type/media subtype")
+@SuppressWarnings("PMD.SingularField") // UI widgets cause lots of false positives
 class AddFileTypePanel extends javax.swing.JPanel {
 
     private static final long serialVersionUID = 1L;
@@ -50,7 +54,7 @@ class AddFileTypePanel extends javax.swing.JPanel {
         this.addTypeListSelectionListener();
         this.enableButtons();
     }
-    
+
     enum EVENT {
         SIG_LIST_CHANGED
     }
@@ -75,6 +79,10 @@ class AddFileTypePanel extends javax.swing.JPanel {
         for (Signature sig : toEdit.getSignatures()) {
             this.signaturesListModel.addElement(sig);
         }
+        this.postHitCheckBox.setSelected(toEdit.shouldCreateInterestingFileHit());
+        this.setNameTextField.setEnabled(toEdit.shouldCreateInterestingFileHit());
+        this.setNameTextField.setText(toEdit.getInterestingFilesSetName());
+            
     }
 
     /**
@@ -87,23 +95,64 @@ class AddFileTypePanel extends javax.swing.JPanel {
     @Messages({"AddMimeTypePanel.emptySigList.message=Must have at least one signature.",
         "AddMimeTypePanel.emptySigList.title=Invalid Signature List",
         "AddMimeTypePanel.emptySetName.message=Interesting files set name is required if alert is requested.",
-        "AddMimeTypePanel.emptySetName.title=Missing Interesting Files Set Name"})
+        "AddMimeTypePanel.emptySetName.title=Missing Interesting Files Set Name",
+        "# {0} - media subtype",
+        "AddFileTypePanel.nonStandardMIMEType.message="
+        + "MIME type must be of form: media type/media subtype. Custom/{0} has been suggested instead.",
+        "# {0} - type name",
+        "AddFileTypePanel.containsIllegalCharacter.message=Invalid character in MIME type, {0} has been suggested instead",
+        "AddFileTypePanel.containsIllegalCharacter.title=Invalid Character in MIME Type",
+        "AddFileTypePanel.nonStandardMIMEType.title=Non-standard MIME Type"})
+
     FileType getFileType() {
         String typeName = mimeTypeTextField.getText();
+
+        //if typeName does not equal sanitized typeName display message saying this name will be used instead 
         if (typeName.isEmpty()) {
-            JOptionPane.showMessageDialog(null,
+            JOptionPane.showMessageDialog(this,
                     NbBundle.getMessage(FileTypeIdGlobalSettingsPanel.class, "FileTypeIdGlobalSettingsPanel.JOptionPane.invalidMIMEType.message"),
                     NbBundle.getMessage(FileTypeIdGlobalSettingsPanel.class, "FileTypeIdGlobalSettingsPanel.JOptionPane.invalidMIMEType.title"),
                     JOptionPane.ERROR_MESSAGE);
             return null;
         }
-
+        //if we need to remove more characters could use matches instead of contains and regex "[^\\w\s\\-\\/] to remove everything that isnt a letter, number, underscore, whitespace, dash, or forward slash.
+        if (typeName.contains("\'")) {  //remove single apostraphes as they are an easy way to accidently screw up PostgreSQL
+            typeName = typeName.replaceAll("[\\']", "");
+            JOptionPane.showMessageDialog(this,
+                    NbBundle.getMessage(FileTypeIdGlobalSettingsPanel.class, "AddFileTypePanel.containsIllegalCharacter.message", typeName),
+                    NbBundle.getMessage(FileTypeIdGlobalSettingsPanel.class, "AddFileTypePanel.containsIllegalCharacter.title"),
+                    JOptionPane.WARNING_MESSAGE);
+            mimeTypeTextField.setText(typeName);
+            return null;
+        }
+        //if the MIME type is lacking two parts or the first part is empty ask if they want to use 'custom' as the first part
+        //if the MIME type has more than 2 parts the first part will be used as a media type and the remainder of the string as the sub-type
+        String[] splitName = typeName.split("/");
+        if (splitName.length < 2 || splitName[0].isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                    NbBundle.getMessage(FileTypeIdGlobalSettingsPanel.class, "AddFileTypePanel.nonStandardMIMEType.message", typeName),
+                    NbBundle.getMessage(FileTypeIdGlobalSettingsPanel.class, "AddFileTypePanel.nonStandardMIMEType.title"),
+                    JOptionPane.WARNING_MESSAGE);
+            mimeTypeTextField.setText("custom/" + typeName);
+            return null;
+        }
+        //Make sure the mimetype will piece back together to be the same string it was entered 
+        //trailing forward slashes will cause this mismatch to happen
+        //suggests a mime_type that will be the same after it is split appart and rejoined
+        if (!StringUtils.join(ArrayUtils.subarray(splitName, 0, splitName.length), "/").equals(typeName)) {
+            String rejoinedMimeType = StringUtils.join(ArrayUtils.subarray(splitName, 0, splitName.length), "/");
+            JOptionPane.showMessageDialog(this,
+                    NbBundle.getMessage(FileTypeIdGlobalSettingsPanel.class, "AddFileTypePanel.nonStandardMIMEType.message", rejoinedMimeType),
+                    NbBundle.getMessage(FileTypeIdGlobalSettingsPanel.class, "AddFileTypePanel.nonStandardMIMEType.title"),
+                    JOptionPane.WARNING_MESSAGE);
+            mimeTypeTextField.setText(rejoinedMimeType);
+            return null;
+        }
         if (this.signaturesListModel.isEmpty()) {
-            JOptionPane.showMessageDialog(null,
+            JOptionPane.showMessageDialog(this,
                     Bundle.AddMimeTypePanel_emptySigList_message(),
                     Bundle.AddMimeTypePanel_emptySigList_title(),
                     JOptionPane.ERROR_MESSAGE);
-
             return null;
         }
         List<Signature> sigList = new ArrayList<>();
@@ -114,7 +163,7 @@ class AddFileTypePanel extends javax.swing.JPanel {
         String setName = "";
         if (this.postHitCheckBox.isSelected()) {
             if (this.setNameTextField.getText().isEmpty()) {
-                JOptionPane.showMessageDialog(null,
+                JOptionPane.showMessageDialog(this,
                         Bundle.AddMimeTypePanel_emptySetName_message(),
                         Bundle.AddMimeTypePanel_emptySetName_title(),
                         JOptionPane.ERROR_MESSAGE);
@@ -155,7 +204,7 @@ class AddFileTypePanel extends javax.swing.JPanel {
             deleteSigButton.setEnabled(true);
         }
     }
-    
+
     boolean hasSignature() {
         return !this.signaturesListModel.isEmpty();
     }
@@ -180,6 +229,7 @@ class AddFileTypePanel extends javax.swing.JPanel {
         postHitCheckBox = new javax.swing.JCheckBox();
         setNameLabel = new javax.swing.JLabel();
         setNameTextField = new javax.swing.JTextField();
+        mimeFormatLabel = new javax.swing.JLabel();
 
         editSigButton.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/images/edit16.png"))); // NOI18N
         org.openide.awt.Mnemonics.setLocalizedText(editSigButton, org.openide.util.NbBundle.getMessage(AddFileTypePanel.class, "AddFileTypePanel.editSigButton.text")); // NOI18N
@@ -197,7 +247,6 @@ class AddFileTypePanel extends javax.swing.JPanel {
             }
         });
 
-        mimeTypeLabel.setFont(mimeTypeLabel.getFont().deriveFont(mimeTypeLabel.getFont().getStyle() & ~java.awt.Font.BOLD, 11));
         org.openide.awt.Mnemonics.setLocalizedText(mimeTypeLabel, org.openide.util.NbBundle.getMessage(AddFileTypePanel.class, "AddFileTypePanel.mimeTypeLabel.text")); // NOI18N
 
         signatureList.setModel(new javax.swing.AbstractListModel<FileType.Signature>() {
@@ -207,7 +256,6 @@ class AddFileTypePanel extends javax.swing.JPanel {
         });
         jScrollPane1.setViewportView(signatureList);
 
-        mimeTypeTextField.setFont(mimeTypeTextField.getFont().deriveFont(mimeTypeTextField.getFont().getStyle() & ~java.awt.Font.BOLD, 11));
         mimeTypeTextField.setText(org.openide.util.NbBundle.getMessage(AddFileTypePanel.class, "AddFileTypePanel.mimeTypeTextField.text")); // NOI18N
 
         addSigButton.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/images/add16.png"))); // NOI18N
@@ -233,6 +281,8 @@ class AddFileTypePanel extends javax.swing.JPanel {
         setNameTextField.setText(org.openide.util.NbBundle.getMessage(AddFileTypePanel.class, "AddFileTypePanel.setNameTextField.text")); // NOI18N
         setNameTextField.setEnabled(postHitCheckBox.isSelected());
 
+        org.openide.awt.Mnemonics.setLocalizedText(mimeFormatLabel, org.openide.util.NbBundle.getMessage(AddFileTypePanel.class, "AddFileTypePanel.mimeFormatLabel.text")); // NOI18N
+
         javax.swing.GroupLayout layout = new javax.swing.GroupLayout(this);
         this.setLayout(layout);
         layout.setHorizontalGroup(
@@ -244,27 +294,28 @@ class AddFileTypePanel extends javax.swing.JPanel {
                         .addComponent(mimeTypeLabel)
                         .addGap(18, 18, 18)
                         .addComponent(mimeTypeTextField))
-                    .addGroup(javax.swing.GroupLayout.Alignment.TRAILING, layout.createSequentialGroup()
-                        .addGap(0, 0, Short.MAX_VALUE)
+                    .addGroup(javax.swing.GroupLayout.Alignment.TRAILING, layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                         .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                            .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                                .addGroup(javax.swing.GroupLayout.Alignment.TRAILING, layout.createSequentialGroup()
-                                    .addComponent(addSigButton)
-                                    .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
-                                    .addComponent(editSigButton)
-                                    .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
-                                    .addComponent(deleteSigButton))
-                                .addComponent(jScrollPane1, javax.swing.GroupLayout.Alignment.TRAILING, javax.swing.GroupLayout.PREFERRED_SIZE, 393, javax.swing.GroupLayout.PREFERRED_SIZE))
-                            .addGroup(layout.createSequentialGroup()
-                                .addGap(28, 28, 28)
-                                .addComponent(setNameLabel)
+                            .addGroup(javax.swing.GroupLayout.Alignment.TRAILING, layout.createSequentialGroup()
+                                .addComponent(addSigButton)
                                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
-                                .addComponent(setNameTextField, javax.swing.GroupLayout.PREFERRED_SIZE, 144, javax.swing.GroupLayout.PREFERRED_SIZE))))
+                                .addComponent(editSigButton)
+                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
+                                .addComponent(deleteSigButton))
+                            .addComponent(jScrollPane1, javax.swing.GroupLayout.Alignment.TRAILING, javax.swing.GroupLayout.PREFERRED_SIZE, 393, javax.swing.GroupLayout.PREFERRED_SIZE))
+                        .addGroup(layout.createSequentialGroup()
+                            .addGap(28, 28, 28)
+                            .addComponent(setNameLabel)
+                            .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
+                            .addComponent(setNameTextField, javax.swing.GroupLayout.PREFERRED_SIZE, 144, javax.swing.GroupLayout.PREFERRED_SIZE)))
                     .addGroup(layout.createSequentialGroup()
                         .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                             .addComponent(jLabel1)
                             .addComponent(postHitCheckBox))
-                        .addGap(0, 0, Short.MAX_VALUE)))
+                        .addGap(0, 0, 0))
+                    .addGroup(layout.createSequentialGroup()
+                        .addGap(71, 71, 71)
+                        .addComponent(mimeFormatLabel, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)))
                 .addContainerGap())
         );
         layout.setVerticalGroup(
@@ -274,7 +325,9 @@ class AddFileTypePanel extends javax.swing.JPanel {
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                     .addComponent(mimeTypeLabel)
                     .addComponent(mimeTypeTextField, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                .addGap(3, 3, 3)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
+                .addComponent(mimeFormatLabel)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                 .addComponent(jLabel1)
                 .addGap(1, 1, 1)
                 .addComponent(jScrollPane1, javax.swing.GroupLayout.PREFERRED_SIZE, 83, javax.swing.GroupLayout.PREFERRED_SIZE)
@@ -289,7 +342,7 @@ class AddFileTypePanel extends javax.swing.JPanel {
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                     .addComponent(setNameLabel)
                     .addComponent(setNameTextField, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
+                .addContainerGap())
         );
     }// </editor-fold>//GEN-END:initComponents
 
@@ -297,6 +350,7 @@ class AddFileTypePanel extends javax.swing.JPanel {
         if (evt.getSource().equals(this.editSigButton) && this.signatureList.getSelectedValue() != null) {
             int selected = this.signatureList.getSelectedIndex();
             this.addSigDialog = new AddFileTypeSignatureDialog(this.signatureList.getSelectedValue());
+            this.addSigDialog.display(false);
             if (addSigDialog.getResult() == BUTTON_PRESSED.OK) {
                 signaturesListModel.removeElementAt(selected);
                 this.signaturesListModel.add(selected, this.addSigDialog.getSignature());
@@ -317,6 +371,7 @@ class AddFileTypePanel extends javax.swing.JPanel {
     private void addSigButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_addSigButtonActionPerformed
         if (evt.getSource().equals(this.addSigButton)) {
             this.addSigDialog = new AddFileTypeSignatureDialog();
+            this.addSigDialog.display(true);
             if (addSigDialog.getResult() == AddFileTypeSignatureDialog.BUTTON_PRESSED.OK) {
                 signaturesListModel.addElement(this.addSigDialog.getSignature());
             }
@@ -338,6 +393,7 @@ class AddFileTypePanel extends javax.swing.JPanel {
     private javax.swing.JButton editSigButton;
     private javax.swing.JLabel jLabel1;
     private javax.swing.JScrollPane jScrollPane1;
+    private javax.swing.JLabel mimeFormatLabel;
     private javax.swing.JLabel mimeTypeLabel;
     private javax.swing.JTextField mimeTypeTextField;
     private javax.swing.JCheckBox postHitCheckBox;

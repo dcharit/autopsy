@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  * 
- * Copyright 2011-2014 Basis Technology Corp.
+ * Copyright 2011-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -34,43 +34,52 @@ public class ViewsNode extends DisplayableItemNode {
     public static final String NAME = NbBundle.getMessage(ViewsNode.class, "ViewsNode.name.text");
 
     public ViewsNode(SleuthkitCase sleuthkitCase) {
-        super(new RootContentChildren(Arrays.asList(
-                new FileTypes(sleuthkitCase),
-                // June '15: Recent Files was removed because it was not useful w/out filtering
-                // add it back in if we can filter the results to a more managable size. 
-                // new RecentFiles(sleuthkitCase),
-                new DeletedContent(sleuthkitCase),
-                new FileSize(sleuthkitCase))),
-                Lookups.singleton(NAME));
+        this(sleuthkitCase, 0);
+    }
+    
+    public ViewsNode(SleuthkitCase sleuthkitCase, long dsObjId) {
+        
+        super(  
+                new RootContentChildren(Arrays.asList(
+                    new FileTypes(sleuthkitCase, dsObjId),
+                    // June '15: Recent Files was removed because it was not useful w/out filtering
+                    // add it back in if we can filter the results to a more managable size. 
+                    // new RecentFiles(sleuthkitCase),
+                    new DeletedContent(sleuthkitCase, dsObjId),
+                    new FileSize(sleuthkitCase, dsObjId))
+                ),
+                Lookups.singleton(NAME)
+            );
         setName(NAME);
         setDisplayName(NAME);
         this.setIconBaseWithExtension("org/sleuthkit/autopsy/images/views.png"); //NON-NLS
     }
 
+    
     @Override
     public boolean isLeafTypeNode() {
         return false;
     }
 
     @Override
-    public <T> T accept(DisplayableItemNodeVisitor<T> v) {
-        return v.visit(this);
+    public <T> T accept(DisplayableItemNodeVisitor<T> visitor) {
+        return visitor.visit(this);
     }
 
     @Override
     protected Sheet createSheet() {
-        Sheet s = super.createSheet();
-        Sheet.Set ss = s.get(Sheet.PROPERTIES);
-        if (ss == null) {
-            ss = Sheet.createPropertiesSet();
-            s.put(ss);
+        Sheet sheet = super.createSheet();
+        Sheet.Set sheetSet = sheet.get(Sheet.PROPERTIES);
+        if (sheetSet == null) {
+            sheetSet = Sheet.createPropertiesSet();
+            sheet.put(sheetSet);
         }
 
-        ss.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "ViewsNode.createSheet.name.name"),
+        sheetSet.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "ViewsNode.createSheet.name.name"),
                 NbBundle.getMessage(this.getClass(), "ViewsNode.createSheet.name.displayName"),
                 NbBundle.getMessage(this.getClass(), "ViewsNode.createSheet.name.desc"),
                 NAME));
-        return s;
+        return sheet;
     }
 
     @Override

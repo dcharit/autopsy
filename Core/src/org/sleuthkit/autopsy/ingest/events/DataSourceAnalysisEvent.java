@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2015 Basis Technology Corp.
+ * Copyright 2015-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,6 +21,7 @@ package org.sleuthkit.autopsy.ingest.events;
 import java.io.Serializable;
 import java.util.logging.Level;
 import org.sleuthkit.autopsy.casemodule.Case;
+import org.sleuthkit.autopsy.casemodule.NoCurrentCaseException;
 import org.sleuthkit.autopsy.coreutils.Logger;
 import org.sleuthkit.autopsy.events.AutopsyEvent;
 import org.sleuthkit.autopsy.ingest.IngestManager;
@@ -38,6 +39,7 @@ public abstract class DataSourceAnalysisEvent extends AutopsyEvent implements Se
     private final long ingestJobId;
     private final long dataSourceIngestJobId;
     private transient Content dataSource;
+    private final long dataSourceObjectId;
 
     /**
      * Constructs an instance of the base class for events published in
@@ -55,6 +57,7 @@ public abstract class DataSourceAnalysisEvent extends AutopsyEvent implements Se
         this.ingestJobId = ingestJobId;
         this.dataSourceIngestJobId = dataSourceIngestJobId;
         this.dataSource = dataSource;
+        this.dataSourceObjectId = dataSource.getId();
     }
 
     /**
@@ -80,7 +83,8 @@ public abstract class DataSourceAnalysisEvent extends AutopsyEvent implements Se
     /**
      * Gets the data source associated with this event.
      *
-     * @return The data source.
+     * @return The data source or null if there is an error getting the data
+     *         source from an event published by a remote node.
      */
     public Content getDataSource() {
         /**
@@ -95,11 +99,10 @@ public abstract class DataSourceAnalysisEvent extends AutopsyEvent implements Se
             return dataSource;
         }
         try {
-            long id = (Long) super.getNewValue();
-            dataSource = Case.getCurrentCase().getSleuthkitCase().getContentById(id);
+            dataSource = Case.getCurrentCaseThrows().getSleuthkitCase().getContentById(dataSourceObjectId);
             return dataSource;
-        } catch (IllegalStateException | TskCoreException ex) {
-            logger.log(Level.SEVERE, "Error doing lazy load for remote event", ex); //NON-NLS
+        } catch (NoCurrentCaseException | TskCoreException ex) {
+            logger.log(Level.SEVERE, String.format("Error doing lazy load of data source (objId=%d) for remote event", this.dataSourceObjectId), ex); //NON-NLS
             return null;
         }
     }

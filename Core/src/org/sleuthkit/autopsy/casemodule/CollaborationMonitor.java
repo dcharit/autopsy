@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011-2015 Basis Technology Corp.
+ * Copyright 2011-2019 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,9 +24,9 @@ import java.beans.PropertyChangeListener;
 import java.io.Serializable;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Arrays;
+import java.util.Collections;
+import java.util.EnumSet;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
@@ -47,6 +47,7 @@ import org.sleuthkit.autopsy.events.AutopsyEventPublisher;
 import org.sleuthkit.autopsy.ingest.IngestManager;
 import org.sleuthkit.autopsy.ingest.events.DataSourceAnalysisCompletedEvent;
 import org.sleuthkit.autopsy.ingest.events.DataSourceAnalysisStartedEvent;
+import org.sleuthkit.datamodel.Content;
 
 /**
  * A collaboration monitor listens to local events and translates them into
@@ -57,7 +58,9 @@ final class CollaborationMonitor {
 
     private static final String EVENT_CHANNEL_NAME = "%s-Collaboration-Monitor-Events"; //NON-NLS
     private static final String COLLABORATION_MONITOR_EVENT = "COLLABORATION_MONITOR_EVENT"; //NON-NLS
-    private static final Set<String> CASE_EVENTS_OF_INTEREST = new HashSet<>(Arrays.asList(new String[]{Case.Events.ADDING_DATA_SOURCE.toString(), Case.Events.DATA_SOURCE_ADDED.toString(), Case.Events.ADDING_DATA_SOURCE_FAILED.toString()}));
+    private static final Set<Case.Events> CASE_EVENTS_OF_INTEREST = EnumSet.of(Case.Events.ADDING_DATA_SOURCE,
+            Case.Events.DATA_SOURCE_ADDED, Case.Events.ADDING_DATA_SOURCE_FAILED);
+    private static final Set<IngestManager.IngestJobEvent> INGEST_JOB_EVENTS_OF_INTEREST = EnumSet.of(IngestManager.IngestJobEvent.DATA_SOURCE_ANALYSIS_STARTED, IngestManager.IngestJobEvent.DATA_SOURCE_ANALYSIS_COMPLETED);
     private static final int NUMBER_OF_PERIODIC_TASK_THREADS = 2;
     private static final String PERIODIC_TASK_THREAD_NAME = "collab-monitor-periodic-tasks-%d"; //NON-NLS
     private static final long HEARTBEAT_INTERVAL_MINUTES = 1;
@@ -77,8 +80,13 @@ final class CollaborationMonitor {
      * collaborating nodes, informs the user of collaboration tasks on other
      * nodes using progress bars, and monitors the health of key collaboration
      * services.
+     *
+     * @param eventChannelPrefix The prefix for the remote events channel.
+     *
+     * @throws
+     * org.sleuthkit.autopsy.casemodule.CollaborationMonitor.CollaborationMonitorException
      */
-    CollaborationMonitor() throws CollaborationMonitorException {
+    CollaborationMonitor(String eventChannelPrefix) throws CollaborationMonitorException {
         /**
          * Get the local host name so it can be used to identify the source of
          * collaboration tasks broadcast by this node.
@@ -91,9 +99,7 @@ final class CollaborationMonitor {
          */
         eventPublisher = new AutopsyEventPublisher();
         try {
-            Case openedCase = Case.getCurrentCase();
-            String channelPrefix = openedCase.getTextIndexName();
-            eventPublisher.openRemoteEventChannel(String.format(EVENT_CHANNEL_NAME, channelPrefix));
+            eventPublisher.openRemoteEventChannel(String.format(EVENT_CHANNEL_NAME, eventChannelPrefix));
         } catch (AutopsyEventException ex) {
             throw new CollaborationMonitorException("Failed to initialize", ex);
         }
@@ -109,8 +115,8 @@ final class CollaborationMonitor {
          * Create a local tasks manager to track and broadcast local tasks.
          */
         localTasksManager = new LocalTasksManager();
-        IngestManager.getInstance().addIngestJobEventListener(localTasksManager);
-        Case.addEventSubscriber(CASE_EVENTS_OF_INTEREST, localTasksManager);
+        IngestManager.getInstance().addIngestJobEventListener(INGEST_JOB_EVENTS_OF_INTEREST, localTasksManager);
+        Case.addEventTypeSubscriber(CASE_EVENTS_OF_INTEREST, localTasksManager);
 
         /**
          * Start periodic tasks that:
@@ -119,8 +125,8 @@ final class CollaborationMonitor {
          * 2. Check for stale remote tasks.<br>
          */
         periodicTasksExecutor = new ScheduledThreadPoolExecutor(NUMBER_OF_PERIODIC_TASK_THREADS, new ThreadFactoryBuilder().setNameFormat(PERIODIC_TASK_THREAD_NAME).build());
-        periodicTasksExecutor.scheduleAtFixedRate(new HeartbeatTask(), HEARTBEAT_INTERVAL_MINUTES, HEARTBEAT_INTERVAL_MINUTES, TimeUnit.MINUTES);
-        periodicTasksExecutor.scheduleAtFixedRate(new StaleTaskDetectionTask(), STALE_TASKS_DETECT_INTERVAL_MINS, STALE_TASKS_DETECT_INTERVAL_MINS, TimeUnit.MINUTES);
+        periodicTasksExecutor.scheduleWithFixedDelay(new HeartbeatTask(), HEARTBEAT_INTERVAL_MINUTES, HEARTBEAT_INTERVAL_MINUTES, TimeUnit.MINUTES);
+        periodicTasksExecutor.scheduleWithFixedDelay(new StaleTaskDetectionTask(), STALE_TASKS_DETECT_INTERVAL_MINS, STALE_TASKS_DETECT_INTERVAL_MINS, TimeUnit.MINUTES);
     }
 
     /**
@@ -138,7 +144,7 @@ final class CollaborationMonitor {
             }
         }
 
-        Case.removeEventSubscriber(CASE_EVENTS_OF_INTEREST, localTasksManager);
+        Case.removeEventTypeSubscriber(CASE_EVENTS_OF_INTEREST, localTasksManager);
         IngestManager.getInstance().removeIngestJobEventListener(localTasksManager);
 
         if (null != eventPublisher) {
@@ -228,9 +234,12 @@ final class CollaborationMonitor {
          * @param event A data source analysis started event.
          */
         synchronized void addDataSourceAnalysisTask(DataSourceAnalysisStartedEvent event) {
-            String status = NbBundle.getMessage(CollaborationMonitor.class, "CollaborationMonitor.analyzingDataSourceStatus.msg", hostName, event.getDataSource().getName());
-            jobIdsTodataSourceAnalysisTasks.put(event.getDataSourceIngestJobId(), new Task(++nextTaskId, status));
-            eventPublisher.publishRemotely(new CollaborationEvent(hostName, getCurrentTasks()));
+            Content dataSource = event.getDataSource();
+            if (dataSource != null) {
+                String status = NbBundle.getMessage(CollaborationMonitor.class, "CollaborationMonitor.analyzingDataSourceStatus.msg", hostName, dataSource.getName());
+                jobIdsTodataSourceAnalysisTasks.put(event.getDataSourceIngestJobId(), new Task(++nextTaskId, status));
+                eventPublisher.publishRemotely(new CollaborationEvent(hostName, getCurrentTasks()));
+            }
         }
 
         /**
@@ -531,7 +540,7 @@ final class CollaborationMonitor {
          * @return A mapping of task IDs to current tasks
          */
         Map<Long, Task> getCurrentTasks() {
-            return currentTasks;
+            return Collections.unmodifiableMap(currentTasks);
         }
 
     }

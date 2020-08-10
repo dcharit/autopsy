@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2014 Basis Technology Corp.
+ * Copyright 2011-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Pattern;
+import org.openide.util.NbBundle;
 import org.sleuthkit.datamodel.AbstractFile;
 import org.sleuthkit.datamodel.TskData;
 
@@ -36,34 +37,88 @@ import org.sleuthkit.datamodel.TskData;
  * Interesting files set definition objects are immutable, so they may be safely
  * published to multiple threads.
  */
-final class FilesSet implements Serializable {
+public final class FilesSet implements Serializable {
 
     private static final long serialVersionUID = 1L;
     private final String name;
     private final String description;
     private final boolean ignoreKnownFiles;
+    private final boolean ignoreUnallocatedSpace;
+
+    private final boolean standardSet;
+    private final int versionNumber;
+
     private final Map<String, Rule> rules = new HashMap<>();
 
     /**
      * Constructs an interesting files set.
      *
-     * @param name             The name of the set.
-     * @param description      A description of the set, may be null.
-     * @param ignoreKnownFiles Whether or not to exclude known files from the
-     *                         set.
-     * @param rules            The rules that define the set. May be null, but a
-     *                         set with no rules is the empty set.
+     * @param name                   The name of the set.
+     * @param description            A description of the set, may be null.
+     * @param ignoreKnownFiles       Whether or not to exclude known files from
+     *                               the set.
+     * @param ignoreUnallocatedSpace Whether or not to exclude unallocated space
+     *                               from the set.
+     * @param rules                  The rules that define the set. May be null,
+     *                               but a set with no rules is the empty set.
      */
-    FilesSet(String name, String description, boolean ignoreKnownFiles, Map<String, Rule> rules) {
+    public FilesSet(String name, String description, boolean ignoreKnownFiles, boolean ignoreUnallocatedSpace, Map<String, Rule> rules) {
+        this(name, description, ignoreKnownFiles, ignoreUnallocatedSpace, rules, false, 0);
+    }
+
+    /**
+     * Constructs an interesting files set.
+     *
+     * @param name                   The name of the set.
+     * @param description            A description of the set, may be null.
+     * @param ignoreKnownFiles       Whether or not to exclude known files from
+     *                               the set.
+     * @param ignoreUnallocatedSpace Whether or not to exclude unallocated space
+     *                               from the set.
+     * @param standardSet            Whether or not the FilesSet is considered a
+     *                               standard interesting set file.
+     * @param versionNumber          The versionNumber for the FilesSet so that
+     *                               older versions can be replaced with newer
+     *                               versions.
+     * @param rules                  The rules that define the set. May be null,
+     *                               but a set with no rules is the empty set.
+     */
+    public FilesSet(String name, String description, boolean ignoreKnownFiles, boolean ignoreUnallocatedSpace, Map<String, Rule> rules,
+            boolean standardSet, int versionNumber) {
         if ((name == null) || (name.isEmpty())) {
             throw new IllegalArgumentException("Interesting files set name cannot be null or empty");
         }
+
+        if (versionNumber < 0) {
+            throw new IllegalArgumentException("version number must be >= 0");
+        }
+
+        this.standardSet = standardSet;
+        this.versionNumber = versionNumber;
+
         this.name = name;
         this.description = (description != null ? description : "");
         this.ignoreKnownFiles = ignoreKnownFiles;
+        this.ignoreUnallocatedSpace = ignoreUnallocatedSpace;
         if (rules != null) {
             this.rules.putAll(rules);
         }
+    }
+
+    /**
+     * @return Whether or not the FilesSet is considered a standard interesting
+     *         set file.
+     */
+    boolean isStandardSet() {
+        return standardSet;
+    }
+
+    /**
+     * @return The versionNumber for the FilesSet so that older versions can be
+     *         replaced with newer versions.
+     */
+    int getVersionNumber() {
+        return versionNumber;
     }
 
     /**
@@ -71,7 +126,7 @@ final class FilesSet implements Serializable {
      *
      * @return A name string.
      */
-    String getName() {
+    public String getName() {
         return this.name;
     }
 
@@ -80,7 +135,7 @@ final class FilesSet implements Serializable {
      *
      * @return A description string, possibly the empty string.
      */
-    String getDescription() {
+    public String getDescription() {
         return this.description;
     }
 
@@ -93,8 +148,18 @@ final class FilesSet implements Serializable {
      *
      * @return True if known files are ignored, false otherwise.
      */
-    boolean ignoresKnownFiles() {
+    public boolean ignoresKnownFiles() {
         return this.ignoreKnownFiles;
+    }
+
+    /**
+     * Returns whether or not this set of rules will process unallocated space.
+     *
+     * @return True if unallocated space should be processed, false if it should
+     *         not be.
+     */
+    public boolean ingoresUnallocatedSpace() {
+        return this.ignoreUnallocatedSpace;
     }
 
     /**
@@ -102,7 +167,7 @@ final class FilesSet implements Serializable {
      *
      * @return A map of set membership rule names to rules, possibly empty.
      */
-    Map<String, Rule> getRules() {
+    public Map<String, Rule> getRules() {
         return new HashMap<>(this.rules);
     }
 
@@ -114,10 +179,18 @@ final class FilesSet implements Serializable {
      * @return The name of the first set membership rule satisfied by the file,
      *         will be null if the file does not belong to the set.
      */
-    String fileIsMemberOf(AbstractFile file) {
+    public String fileIsMemberOf(AbstractFile file) {
         if ((this.ignoreKnownFiles) && (file.getKnown() == TskData.FileKnown.KNOWN)) {
             return null;
         }
+
+        if ((this.ignoreUnallocatedSpace)
+                && (file.getType().equals(TskData.TSK_DB_FILES_TYPE_ENUM.UNALLOC_BLOCKS)
+                || file.getType().equals(TskData.TSK_DB_FILES_TYPE_ENUM.SLACK)
+                || file.getType().equals(TskData.TSK_DB_FILES_TYPE_ENUM.UNUSED_BLOCKS))) {
+            return null;
+        }
+
         for (Rule rule : rules.values()) {
             if (rule.isSatisfied(file)) {
                 return rule.getName();
@@ -137,7 +210,7 @@ final class FilesSet implements Serializable {
      * A set membership rule for an interesting files set. The immutability of a
      * rule object allows it to be safely published to multiple threads.
      */
-    static class Rule implements Serializable {
+    public final static class Rule implements Serializable {
 
         private static final long serialVersionUID = 1L;
         private final String uuid;
@@ -147,6 +220,7 @@ final class FilesSet implements Serializable {
         private final ParentPathCondition pathCondition;
         private final MimeTypeCondition mimeTypeCondition;
         private final FileSizeCondition fileSizeCondition;
+        private final DateCondition dateCondition;
         private final List<FileAttributeCondition> conditions = new ArrayList<>();
 
         /**
@@ -158,15 +232,14 @@ final class FilesSet implements Serializable {
          * @param pathCondition     A file path condition, may be null.
          * @param mimeTypeCondition A file mime type condition, may be null.
          * @param fileSizeCondition A file size condition, may be null.
+         * @param dateCondition     A file date created or modified condition,
+         *                          may be null
          */
-        Rule(String ruleName, FileNameCondition fileNameCondition, MetaTypeCondition metaTypeCondition, ParentPathCondition pathCondition, MimeTypeCondition mimeTypeCondition, FileSizeCondition fileSizeCondition) {
+        public Rule(String ruleName, FileNameCondition fileNameCondition, MetaTypeCondition metaTypeCondition, ParentPathCondition pathCondition, MimeTypeCondition mimeTypeCondition, FileSizeCondition fileSizeCondition, DateCondition dateCondition) {
             // since ruleName is optional, ruleUUID can be used to uniquely identify a rule.
             this.uuid = UUID.randomUUID().toString();
             if (metaTypeCondition == null) {
                 throw new IllegalArgumentException("Interesting files set rule meta-type condition cannot be null");
-            }
-            if (pathCondition == null && fileNameCondition == null && mimeTypeCondition == null && fileSizeCondition == null) {
-                throw new IllegalArgumentException("Must have at least one condition on rule.");
             }
 
             this.ruleName = ruleName;
@@ -197,6 +270,10 @@ final class FilesSet implements Serializable {
             if (this.pathCondition != null) {
                 this.conditions.add(this.pathCondition);
             }
+            this.dateCondition = dateCondition;
+            if (this.dateCondition != null) {
+                this.conditions.add(this.dateCondition);
+            }
         }
 
         /**
@@ -204,7 +281,7 @@ final class FilesSet implements Serializable {
          *
          * @return A name string.
          */
-        String getName() {
+        public String getName() {
             return ruleName;
         }
 
@@ -213,7 +290,7 @@ final class FilesSet implements Serializable {
          *
          * @return A file name condition. Can be null.
          */
-        FileNameCondition getFileNameCondition() {
+        public FileNameCondition getFileNameCondition() {
             return this.fileNameCondition;
         }
 
@@ -222,7 +299,7 @@ final class FilesSet implements Serializable {
          *
          * @return A meta-type condition. Can be null.
          */
-        MetaTypeCondition getMetaTypeCondition() {
+        public MetaTypeCondition getMetaTypeCondition() {
             return this.metaTypeCondition;
         }
 
@@ -231,8 +308,12 @@ final class FilesSet implements Serializable {
          *
          * @return A path condition, may be null.
          */
-        ParentPathCondition getPathCondition() {
+        public ParentPathCondition getPathCondition() {
             return this.pathCondition;
+        }
+
+        public DateCondition getDateCondition() {
+            return this.dateCondition;
         }
 
         /**
@@ -242,7 +323,7 @@ final class FilesSet implements Serializable {
          *
          * @return True if the rule is satisfied, false otherwise.
          */
-        boolean isSatisfied(AbstractFile file) {
+        public boolean isSatisfied(AbstractFile file) {
             for (FileAttributeCondition condition : conditions) {
                 if (!condition.passes(file)) {
                     return false;
@@ -251,6 +332,10 @@ final class FilesSet implements Serializable {
             return true;
         }
 
+        @NbBundle.Messages({
+            "# {0} - daysIncluded",
+            "FilesSet.rule.dateRule.toString=(modified within {0} day(s))"
+        })
         @Override
         public String toString() {
             // This override is designed to provide a display name for use with 
@@ -264,6 +349,8 @@ final class FilesSet implements Serializable {
             } else if (this.fileSizeCondition != null) {
                 return this.ruleName + " (" + fileSizeCondition.getComparator().getSymbol() + " " + fileSizeCondition.getSizeValue()
                         + " " + fileSizeCondition.getUnit().getName() + ")";
+            } else if (this.dateCondition != null) {
+                return this.ruleName + Bundle.FilesSet_rule_dateRule_toString(dateCondition.getDaysIncluded());
             } else {
                 return this.ruleName + " ()";
             }
@@ -280,14 +367,14 @@ final class FilesSet implements Serializable {
         /**
          * @return the mime type condition. Can be null.
          */
-        MimeTypeCondition getMimeTypeCondition() {
+        public MimeTypeCondition getMimeTypeCondition() {
             return mimeTypeCondition;
         }
 
         /**
          * @return the file size condition. Can be null.
          */
-        FileSizeCondition getFileSizeCondition() {
+        public FileSizeCondition getFileSizeCondition() {
             return fileSizeCondition;
         }
 
@@ -310,7 +397,7 @@ final class FilesSet implements Serializable {
         /**
          * A class for checking files based upon their MIME types.
          */
-        static final class MimeTypeCondition implements FileAttributeCondition {
+        public static final class MimeTypeCondition implements FileAttributeCondition {
 
             private static final long serialVersionUID = 1L;
             private final String mimeType;
@@ -320,7 +407,7 @@ final class FilesSet implements Serializable {
              *
              * @param mimeType The mime type to condition for
              */
-            MimeTypeCondition(String mimeType) {
+            public MimeTypeCondition(String mimeType) {
                 this.mimeType = mimeType;
             }
 
@@ -334,7 +421,7 @@ final class FilesSet implements Serializable {
              *
              * @return the mime type
              */
-            String getMimeType() {
+            public String getMimeType() {
                 return this.mimeType;
             }
 
@@ -344,14 +431,14 @@ final class FilesSet implements Serializable {
          * A class for checking whether a file's size is within the
          * specifications given (i.e. < N Bytes).
          */
-        static final class FileSizeCondition implements FileAttributeCondition {
+        public static final class FileSizeCondition implements FileAttributeCondition {
 
             private static final long serialVersionUID = 1L;
 
             /**
              * Represents a comparison item for file size
              */
-            static enum COMPARATOR {
+            public static enum COMPARATOR {
 
                 LESS_THAN("<"),
                 LESS_THAN_EQUAL("≤"),
@@ -361,23 +448,27 @@ final class FilesSet implements Serializable {
 
                 private String symbol;
 
-                COMPARATOR(String symbol) {
+                private COMPARATOR(String symbol) {
                     this.symbol = symbol;
                 }
 
                 public static COMPARATOR fromSymbol(String symbol) {
-                    if (symbol.equals("<=") || symbol.equals("≤")) {
-                        return LESS_THAN_EQUAL;
-                    } else if (symbol.equals("<")) {
-                        return LESS_THAN;
-                    } else if (symbol.equals("==") || symbol.equals("=")) {
-                        return EQUAL;
-                    } else if (symbol.equals(">")) {
-                        return GREATER_THAN;
-                    } else if (symbol.equals(">=") || symbol.equals("≥")) {
-                        return GREATER_THAN_EQUAL;
-                    } else {
-                        throw new IllegalArgumentException("Invalid symbol");
+                    switch (symbol) {
+                        case "<=":
+                        case "≤":
+                            return LESS_THAN_EQUAL;
+                        case "<":
+                            return LESS_THAN;
+                        case "==":
+                        case "=":
+                            return EQUAL;
+                        case ">":
+                            return GREATER_THAN;
+                        case ">=":
+                        case "≥":
+                            return GREATER_THAN_EQUAL;
+                        default:
+                            throw new IllegalArgumentException("Invalid symbol");
                     }
                 }
 
@@ -392,7 +483,7 @@ final class FilesSet implements Serializable {
             /**
              * Represents the units of size
              */
-            static enum SIZE_UNIT {
+            public static enum SIZE_UNIT {
 
                 BYTE(1, "Bytes"),
                 KILOBYTE(1024, "Kilobytes"),
@@ -430,7 +521,7 @@ final class FilesSet implements Serializable {
             private final SIZE_UNIT unit;
             private final int sizeValue;
 
-            FileSizeCondition(COMPARATOR comparator, SIZE_UNIT unit, int sizeValue) {
+            public FileSizeCondition(COMPARATOR comparator, SIZE_UNIT unit, int sizeValue) {
                 this.comparator = comparator;
                 this.unit = unit;
                 this.sizeValue = sizeValue;
@@ -441,7 +532,7 @@ final class FilesSet implements Serializable {
              *
              * @return the comparator
              */
-            COMPARATOR getComparator() {
+            public COMPARATOR getComparator() {
                 return comparator;
             }
 
@@ -450,7 +541,7 @@ final class FilesSet implements Serializable {
              *
              * @return the unit
              */
-            SIZE_UNIT getUnit() {
+            public SIZE_UNIT getUnit() {
                 return unit;
             }
 
@@ -459,7 +550,7 @@ final class FilesSet implements Serializable {
              *
              * @return the size value
              */
-            int getSizeValue() {
+            public int getSizeValue() {
                 return sizeValue;
             }
 
@@ -489,15 +580,16 @@ final class FilesSet implements Serializable {
          * rule. The immutability of a meta-type condition object allows it to
          * be safely published to multiple threads.
          */
-        static final class MetaTypeCondition implements FileAttributeCondition {
+        public static final class MetaTypeCondition implements FileAttributeCondition {
 
             private static final long serialVersionUID = 1L;
 
-            enum Type {
+            public enum Type {
 
                 FILES,
                 DIRECTORIES,
-                FILES_AND_DIRECTORIES
+                FILES_AND_DIRECTORIES,
+                ALL
             }
 
             private final Type type;
@@ -505,9 +597,9 @@ final class FilesSet implements Serializable {
             /**
              * Construct a meta-type condition.
              *
-             * @param metaType The meta-type to match, must.
+             * @param type The meta-type to match, must.
              */
-            MetaTypeCondition(Type type) {
+            public MetaTypeCondition(Type type) {
                 this.type = type;
             }
 
@@ -515,12 +607,18 @@ final class FilesSet implements Serializable {
             public boolean passes(AbstractFile file) {
                 switch (this.type) {
                     case FILES:
-                        return file.getMetaType() == TskData.TSK_FS_META_TYPE_ENUM.TSK_FS_META_TYPE_REG;
+                        return file.isFile();
                     case DIRECTORIES:
-                        return file.getMetaType() == TskData.TSK_FS_META_TYPE_ENUM.TSK_FS_META_TYPE_DIR;
-                    default:
+                        return file.getMetaType() == TskData.TSK_FS_META_TYPE_ENUM.TSK_FS_META_TYPE_DIR
+                                || file.getMetaType() == TskData.TSK_FS_META_TYPE_ENUM.TSK_FS_META_TYPE_VIRT_DIR;
+                    case FILES_AND_DIRECTORIES:
                         return file.getMetaType() == TskData.TSK_FS_META_TYPE_ENUM.TSK_FS_META_TYPE_REG
-                                || file.getMetaType() == TskData.TSK_FS_META_TYPE_ENUM.TSK_FS_META_TYPE_DIR;
+                                || file.getMetaType() == TskData.TSK_FS_META_TYPE_ENUM.TSK_FS_META_TYPE_DIR
+                                || file.getMetaType() == TskData.TSK_FS_META_TYPE_ENUM.TSK_FS_META_TYPE_VIRT_DIR;
+                    case ALL:
+                        return true;  //Effectively ignores the metatype condition when All is selected.
+                    default:
+                        return true;
                 }
             }
 
@@ -529,7 +627,7 @@ final class FilesSet implements Serializable {
              *
              * @return A member of the MetaTypeCondition.Type enumeration.
              */
-            Type getMetaType() {
+            public Type getMetaType() {
                 return this.type;
             }
         }
@@ -572,6 +670,10 @@ final class FilesSet implements Serializable {
          */
         private static abstract class AbstractTextCondition implements TextCondition {
 
+            /*
+             * To ensure compatibility with existing serialized configuration
+             * settings, this class cannot have a 'serialVersionUID'.
+             */
             private final TextMatcher textMatcher;
 
             /**
@@ -594,6 +696,15 @@ final class FilesSet implements Serializable {
              */
             AbstractTextCondition(Pattern regex) {
                 this.textMatcher = new FilesSet.Rule.RegexMatcher(regex);
+            }
+
+            /**
+             * Construct a case-insensitive multi-value text condition.
+             *
+             * @param values The list of values in which to look for a match.
+             */
+            AbstractTextCondition(List<String> values) {
+                this.textMatcher = new FilesSet.Rule.CaseInsensitiveMultiValueStringComparisionMatcher(values);
             }
 
             /**
@@ -640,7 +751,7 @@ final class FilesSet implements Serializable {
          * The immutability of a path condition object allows it to be safely
          * published to multiple threads.
          */
-        static final class ParentPathCondition extends AbstractTextCondition {
+        public static final class ParentPathCondition extends AbstractTextCondition {
 
             private static final long serialVersionUID = 1L;
 
@@ -649,7 +760,7 @@ final class FilesSet implements Serializable {
              *
              * @param path The path to be matched.
              */
-            ParentPathCondition(String path) {
+            public ParentPathCondition(String path) {
                 super(path, true);
             }
 
@@ -658,7 +769,7 @@ final class FilesSet implements Serializable {
              *
              * @param path The path regular expression to be matched.
              */
-            ParentPathCondition(Pattern path) {
+            public ParentPathCondition(Pattern path) {
                 super(path);
             }
 
@@ -682,7 +793,7 @@ final class FilesSet implements Serializable {
          * The immutability of a file name condition object allows it to be
          * safely published to multiple threads.
          */
-        static final class FullNameCondition extends AbstractTextCondition implements FileNameCondition {
+        public static final class FullNameCondition extends AbstractTextCondition implements FileNameCondition {
 
             private static final long serialVersionUID = 1L;
 
@@ -691,7 +802,7 @@ final class FilesSet implements Serializable {
              *
              * @param name The file name to be matched.
              */
-            FullNameCondition(String name) {
+            public FullNameCondition(String name) {
                 super(name, false);
             }
 
@@ -700,7 +811,7 @@ final class FilesSet implements Serializable {
              *
              * @param name The file name regular expression to be matched.
              */
-            FullNameCondition(Pattern name) {
+            public FullNameCondition(Pattern name) {
                 super(name);
             }
 
@@ -712,11 +823,52 @@ final class FilesSet implements Serializable {
         }
 
         /**
+         * A class for checking whether a file's creation or modification
+         * occured in a specific range of time
+         */
+        public static final class DateCondition implements FileAttributeCondition {
+
+            /*
+             * To ensure compatibility with existing serialized configuration
+             * settings, this class cannot have a 'serialVersionUID'.
+             */
+            private final static long SECS_PER_DAY = 60 * 60 * 24;
+
+            private int daysIncluded;
+
+            /**
+             * Construct a new DateCondition
+             *
+             * @param days - files created or modified more recently than this
+             *             number of days will pass
+             */
+            public DateCondition(int days) {
+                daysIncluded = days;
+            }
+
+            /**
+             * Get the number of days which this condition allows to pass
+             *
+             * @return integer value of the number days which will pass
+             */
+            public int getDaysIncluded() {
+                return daysIncluded;
+            }
+
+            @Override
+            public boolean passes(AbstractFile file) {
+                long dateThreshold = System.currentTimeMillis() / 1000 - daysIncluded * SECS_PER_DAY;
+                return file.getCrtime() > dateThreshold || file.getMtime() > dateThreshold;
+            }
+
+        }
+
+        /**
          * A file name extension condition for an interesting files set
          * membership rule. The immutability of a file name extension condition
          * object allows it to be safely published to multiple threads.
          */
-        static final class ExtensionCondition extends AbstractTextCondition implements FileNameCondition {
+        public static final class ExtensionCondition extends AbstractTextCondition implements FileNameCondition {
 
             private static final long serialVersionUID = 1L;
 
@@ -725,11 +877,23 @@ final class FilesSet implements Serializable {
              *
              * @param extension The file name extension to be matched.
              */
-            ExtensionCondition(String extension) {
+            public ExtensionCondition(String extension) {
                 // If there is a leading ".", strip it since 
                 // AbstractFile.getFileNameExtension() returns just the 
                 // extension chars and not the dot.
-                super(extension.startsWith(".") ? extension.substring(1) : extension, false);
+                super(normalize(extension), false);
+            }
+
+            /**
+             * Construct a case-insensitive file name extension condition.
+             *
+             * @param extensions The file name extensions to be matched.
+             */
+            public ExtensionCondition(List<String> extensions) {
+                // If there is a leading "." in any list value, strip it since 
+                // AbstractFile.getFileNameExtension() returns just the 
+                // extension chars and not the dot.
+                super(normalize(extensions));
             }
 
             /**
@@ -738,13 +902,41 @@ final class FilesSet implements Serializable {
              * @param extension The file name extension regular expression to be
              *                  matched.
              */
-            ExtensionCondition(Pattern extension) {
-                super(extension.pattern(), false);
+            public ExtensionCondition(Pattern extension) {
+                super(extension);
             }
 
             @Override
             public boolean passes(AbstractFile file) {
                 return this.textMatches(file.getNameExtension());
+            }
+
+            /**
+             * Strip "." from the start of extensions in the provided list.
+             *
+             * @param extensions The list of extensions to be processed.
+             *
+             * @return A post-processed list of extensions.
+             */
+            private static List<String> normalize(List<String> extensions) {
+                List<String> values = new ArrayList<>(extensions);
+
+                for (int i = 0; i < values.size(); i++) {
+                    values.set(i, normalize(values.get(i)));
+                }
+
+                return values;
+            }
+
+            /**
+             * Strip "." from the start of the provided extension.
+             *
+             * @param extension The extension to be processed.
+             *
+             * @return A post-processed extension.
+             */
+            private static String normalize(String extension) {
+                return extension.startsWith(".") ? extension.substring(1) : extension;
             }
 
         }
@@ -851,6 +1043,48 @@ final class FilesSet implements Serializable {
             public boolean textMatches(String subject) {
                 return pattern.matcher(subject).find();
             }
+        }
+
+        /**
+         * A text matcher that looks for a single case-insensitive string match
+         * in a multi-value list.
+         */
+        private static class CaseInsensitiveMultiValueStringComparisionMatcher implements TextMatcher {
+
+            private static final long serialVersionUID = 1L;
+            private final List<String> valuesToMatch;
+
+            /**
+             * Construct a text matcher that looks for a single case-insensitive
+             * string match in a multi-value list.
+             *
+             * @param valuesToMatch The list of values in which to look for a
+             *                      match.
+             */
+            CaseInsensitiveMultiValueStringComparisionMatcher(List<String> valuesToMatch) {
+                this.valuesToMatch = valuesToMatch;
+            }
+
+            @Override
+            public String getTextToMatch() {
+                return String.join(",", this.valuesToMatch);
+            }
+
+            @Override
+            public boolean isRegex() {
+                return false;
+            }
+
+            @Override
+            public boolean textMatches(String subject) {
+                for (String value : valuesToMatch) {
+                    if (value.equalsIgnoreCase(subject)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
         }
 
         /**

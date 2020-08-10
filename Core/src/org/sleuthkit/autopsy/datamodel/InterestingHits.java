@@ -1,15 +1,15 @@
 /*
  * Autopsy Forensic Browser
- * 
- * Copyright 2011-2015 Basis Technology Corp.
+ *
+ * Copyright 2011-2020 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- * 
+ *
  *     http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -24,6 +24,8 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -39,6 +41,7 @@ import org.openide.nodes.Sheet;
 import org.openide.util.NbBundle;
 import org.openide.util.lookup.Lookups;
 import org.sleuthkit.autopsy.casemodule.Case;
+import org.sleuthkit.autopsy.casemodule.NoCurrentCaseException;
 import org.sleuthkit.autopsy.coreutils.Logger;
 import org.sleuthkit.autopsy.ingest.IngestManager;
 import org.sleuthkit.autopsy.ingest.ModuleDataEvent;
@@ -54,31 +57,52 @@ public class InterestingHits implements AutopsyVisitableItem {
             .getMessage(InterestingHits.class, "InterestingHits.interestingItems.text");
     private static final String DISPLAY_NAME = NbBundle.getMessage(InterestingHits.class, "InterestingHits.displayName.text");
     private static final Logger logger = Logger.getLogger(InterestingHits.class.getName());
+    private static final Set<IngestManager.IngestJobEvent> INGEST_JOB_EVENTS_OF_INTEREST = EnumSet.of(IngestManager.IngestJobEvent.COMPLETED, IngestManager.IngestJobEvent.CANCELLED);
+    private static final Set<IngestManager.IngestModuleEvent> INGEST_MODULE_EVENTS_OF_INTEREST = EnumSet.of(IngestManager.IngestModuleEvent.DATA_ADDED);
     private SleuthkitCase skCase;
     private final InterestingResults interestingResults = new InterestingResults();
+    private final long filteringDSObjId; // 0 if not filtering/grouping by data source
 
+    /**
+     * Constructor
+     *
+     * @param skCase Case DB
+     *
+     */
     public InterestingHits(SleuthkitCase skCase) {
+        this(skCase, 0);
+    }
+
+    /**
+     * Constructor
+     *
+     * @param skCase Case DB
+     * @param objId  Object id of the data source
+     *
+     */
+    public InterestingHits(SleuthkitCase skCase, long objId) {
         this.skCase = skCase;
+        this.filteringDSObjId = objId;
         interestingResults.update();
     }
 
     private class InterestingResults extends Observable {
 
         // NOTE: the map can be accessed by multiple worker threads and needs to be synchronized
-        private final Map<String, Set<Long>> interestingItemsMap = new LinkedHashMap<>();
+        private final Map<String, Map<String, Set<Long>>> interestingItemsMap = new LinkedHashMap<>();
 
         public List<String> getSetNames() {
             List<String> setNames;
             synchronized (interestingItemsMap) {
                 setNames = new ArrayList<>(interestingItemsMap.keySet());
-            }                
+            }
             Collections.sort(setNames);
             return setNames;
         }
 
-        public Set<Long> getArtifactIds(String setName) {
+        public Set<Long> getArtifactIds(String setName, String typeName) {
             synchronized (interestingItemsMap) {
-                return interestingItemsMap.get(setName);
+                return interestingItemsMap.get(setName).get(typeName);
             }
         }
 
@@ -109,6 +133,9 @@ public class InterestingHits implements AutopsyVisitableItem {
                     + "attribute_type_id=" + setNameId //NON-NLS
                     + " AND blackboard_attributes.artifact_id=blackboard_artifacts.artifact_id" //NON-NLS
                     + " AND blackboard_artifacts.artifact_type_id=" + artId; //NON-NLS
+            if (filteringDSObjId > 0) {
+                query += "  AND blackboard_artifacts.data_source_obj_id = " + filteringDSObjId;
+            }
 
             try (CaseDbQuery dbQuery = skCase.executeQuery(query)) {
                 synchronized (interestingItemsMap) {
@@ -117,9 +144,11 @@ public class InterestingHits implements AutopsyVisitableItem {
                         String value = resultSet.getString("value_text"); //NON-NLS
                         long artifactId = resultSet.getLong("artifact_id"); //NON-NLS
                         if (!interestingItemsMap.containsKey(value)) {
-                            interestingItemsMap.put(value, new HashSet<>());
+                            interestingItemsMap.put(value, new LinkedHashMap<>());
+                            interestingItemsMap.get(value).put(BlackboardArtifact.ARTIFACT_TYPE.TSK_INTERESTING_FILE_HIT.getDisplayName(), new HashSet<>());
+                            interestingItemsMap.get(value).put(BlackboardArtifact.ARTIFACT_TYPE.TSK_INTERESTING_ARTIFACT_HIT.getDisplayName(), new HashSet<>());
                         }
-                        interestingItemsMap.get(value).add(artifactId);
+                        interestingItemsMap.get(value).get(artType.getDisplayName()).add(artifactId);
                     }
                 }
             } catch (TskCoreException | SQLException ex) {
@@ -129,8 +158,8 @@ public class InterestingHits implements AutopsyVisitableItem {
     }
 
     @Override
-    public <T> T accept(AutopsyItemVisitor<T> v) {
-        return v.visit(this);
+    public <T> T accept(AutopsyItemVisitor<T> visitor) {
+        return visitor.visit(this);
     }
 
     /**
@@ -151,25 +180,25 @@ public class InterestingHits implements AutopsyVisitableItem {
         }
 
         @Override
-        public <T> T accept(DisplayableItemNodeVisitor<T> v) {
-            return v.visit(this);
+        public <T> T accept(DisplayableItemNodeVisitor<T> visitor) {
+            return visitor.visit(this);
         }
 
         @Override
         protected Sheet createSheet() {
-            Sheet s = super.createSheet();
-            Sheet.Set ss = s.get(Sheet.PROPERTIES);
-            if (ss == null) {
-                ss = Sheet.createPropertiesSet();
-                s.put(ss);
+            Sheet sheet = super.createSheet();
+            Sheet.Set sheetSet = sheet.get(Sheet.PROPERTIES);
+            if (sheetSet == null) {
+                sheetSet = Sheet.createPropertiesSet();
+                sheet.put(sheetSet);
             }
 
-            ss.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "InterestingHits.createSheet.name.name"),
+            sheetSet.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "InterestingHits.createSheet.name.name"),
                     NbBundle.getMessage(this.getClass(), "InterestingHits.createSheet.name.displayName"),
                     NbBundle.getMessage(this.getClass(), "InterestingHits.createSheet.name.desc"),
                     getName()));
 
-            return s;
+            return sheet;
         }
 
         @Override
@@ -185,66 +214,63 @@ public class InterestingHits implements AutopsyVisitableItem {
          * nice methods for its startup and shutdown, so it seemed like a
          * cleaner place to register the property change listener.
          */
-        private final PropertyChangeListener pcl = new PropertyChangeListener() {
-            @Override
-            public void propertyChange(PropertyChangeEvent evt) {
-                String eventType = evt.getPropertyName();
-                if (eventType.equals(IngestManager.IngestModuleEvent.DATA_ADDED.toString())) {
+        private final PropertyChangeListener pcl = (PropertyChangeEvent evt) -> {
+            String eventType = evt.getPropertyName();
+            if (eventType.equals(IngestManager.IngestModuleEvent.DATA_ADDED.toString())) {
+                /**
+                 * Checking for a current case is a stop gap measure until a
+                 * different way of handling the closing of cases is worked out.
+                 * Currently, remote events may be received for a case that is
+                 * already closed.
+                 */
+                try {
+                    Case.getCurrentCaseThrows();
                     /**
-                     * Checking for a current case is a stop gap measure until a
-                     * different way of handling the closing of cases is worked
-                     * out. Currently, remote events may be received for a case
-                     * that is already closed.
+                     * Even with the check above, it is still possible that the
+                     * case will be closed in a different thread before this
+                     * code executes. If that happens, it is possible for the
+                     * event to have a null oldValue.
                      */
-                    try {
-                        Case.getCurrentCase();
-                        /**
-                         * Even with the check above, it is still possible that
-                         * the case will be closed in a different thread before
-                         * this code executes. If that happens, it is possible
-                         * for the event to have a null oldValue.
-                         */
-                        ModuleDataEvent eventData = (ModuleDataEvent) evt.getOldValue();
-                        if (null != eventData && (eventData.getBlackboardArtifactType().getTypeID() == BlackboardArtifact.ARTIFACT_TYPE.TSK_INTERESTING_ARTIFACT_HIT.getTypeID()
-                                || eventData.getBlackboardArtifactType().getTypeID() == BlackboardArtifact.ARTIFACT_TYPE.TSK_INTERESTING_FILE_HIT.getTypeID())) {
-                            interestingResults.update();
-                        }
-                    } catch (IllegalStateException notUsed) {
-                        /**
-                         * Case is closed, do nothing.
-                         */
-                    }
-                } else if (eventType.equals(IngestManager.IngestJobEvent.COMPLETED.toString())
-                        || eventType.equals(IngestManager.IngestJobEvent.CANCELLED.toString())) {
-                    /**
-                     * Checking for a current case is a stop gap measure until a
-                     * different way of handling the closing of cases is worked
-                     * out. Currently, remote events may be received for a case
-                     * that is already closed.
-                     */
-                    try {
-                        Case.getCurrentCase();
+                    ModuleDataEvent eventData = (ModuleDataEvent) evt.getOldValue();
+                    if (null != eventData && (eventData.getBlackboardArtifactType().getTypeID() == BlackboardArtifact.ARTIFACT_TYPE.TSK_INTERESTING_ARTIFACT_HIT.getTypeID()
+                            || eventData.getBlackboardArtifactType().getTypeID() == BlackboardArtifact.ARTIFACT_TYPE.TSK_INTERESTING_FILE_HIT.getTypeID())) {
                         interestingResults.update();
-                    } catch (IllegalStateException notUsed) {
-                        /**
-                         * Case is closed, do nothing.
-                         */
                     }
-                } else if (eventType.equals(Case.Events.CURRENT_CASE.toString())) {
-                    // case was closed. Remove listeners so that we don't get called with a stale case handle
-                    if (evt.getNewValue() == null) {
-                        removeNotify();
-                        skCase = null;
-                    }
+                } catch (NoCurrentCaseException notUsed) {
+                    /**
+                     * Case is closed, do nothing.
+                     */
+                }
+            } else if (eventType.equals(IngestManager.IngestJobEvent.COMPLETED.toString())
+                    || eventType.equals(IngestManager.IngestJobEvent.CANCELLED.toString())) {
+                /**
+                 * Checking for a current case is a stop gap measure until a
+                 * different way of handling the closing of cases is worked out.
+                 * Currently, remote events may be received for a case that is
+                 * already closed.
+                 */
+                try {
+                    Case.getCurrentCaseThrows();
+                    interestingResults.update();
+                } catch (NoCurrentCaseException notUsed) {
+                    /**
+                     * Case is closed, do nothing.
+                     */
+                }
+            } else if (eventType.equals(Case.Events.CURRENT_CASE.toString())) {
+                // case was closed. Remove listeners so that we don't get called with a stale case handle
+                if (evt.getNewValue() == null) {
+                    removeNotify();
+                    skCase = null;
                 }
             }
         };
 
         @Override
         protected void addNotify() {
-            IngestManager.getInstance().addIngestJobEventListener(pcl);
-            IngestManager.getInstance().addIngestModuleEventListener(pcl);
-            Case.addPropertyChangeListener(pcl);
+            IngestManager.getInstance().addIngestJobEventListener(INGEST_JOB_EVENTS_OF_INTEREST, pcl);
+            IngestManager.getInstance().addIngestModuleEventListener(INGEST_MODULE_EVENTS_OF_INTEREST, pcl);
+            Case.addEventTypeSubscriber(EnumSet.of(Case.Events.CURRENT_CASE), pcl);
             interestingResults.update();
             interestingResults.addObserver(this);
         }
@@ -253,7 +279,7 @@ public class InterestingHits implements AutopsyVisitableItem {
         protected void removeNotify() {
             IngestManager.getInstance().removeIngestJobEventListener(pcl);
             IngestManager.getInstance().removeIngestModuleEventListener(pcl);
-            Case.removePropertyChangeListener(pcl);
+            Case.removeEventTypeSubscriber(EnumSet.of(Case.Events.CURRENT_CASE), pcl);
             interestingResults.deleteObserver(this);
         }
 
@@ -279,7 +305,7 @@ public class InterestingHits implements AutopsyVisitableItem {
         private final String setName;
 
         public SetNameNode(String setName) {//, Set<Long> children) {
-            super(Children.create(new HitFactory(setName), true), Lookups.singleton(setName));
+            super(Children.create(new HitTypeFactory(setName), true), Lookups.singleton(setName));
             this.setName = setName;
             super.setName(setName);
             updateDisplayName();
@@ -288,34 +314,36 @@ public class InterestingHits implements AutopsyVisitableItem {
         }
 
         private void updateDisplayName() {
-            super.setDisplayName(setName + " (" + interestingResults.getArtifactIds(setName).size() + ")");
+            int sizeOfSet = interestingResults.getArtifactIds(setName, BlackboardArtifact.ARTIFACT_TYPE.TSK_INTERESTING_ARTIFACT_HIT.getDisplayName()).size()
+                    + interestingResults.getArtifactIds(setName, BlackboardArtifact.ARTIFACT_TYPE.TSK_INTERESTING_FILE_HIT.getDisplayName()).size();
+            super.setDisplayName(setName + " (" + sizeOfSet + ")");
         }
 
         @Override
         public boolean isLeafTypeNode() {
-            return true;
+            return false;
         }
 
         @Override
         protected Sheet createSheet() {
-            Sheet s = super.createSheet();
-            Sheet.Set ss = s.get(Sheet.PROPERTIES);
-            if (ss == null) {
-                ss = Sheet.createPropertiesSet();
-                s.put(ss);
+            Sheet sheet = super.createSheet();
+            Sheet.Set sheetSet = sheet.get(Sheet.PROPERTIES);
+            if (sheetSet == null) {
+                sheetSet = Sheet.createPropertiesSet();
+                sheet.put(sheetSet);
             }
 
-            ss.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "InterestingHits.createSheet.name.name"),
+            sheetSet.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "InterestingHits.createSheet.name.name"),
                     NbBundle.getMessage(this.getClass(), "InterestingHits.createSheet.name.name"),
                     NbBundle.getMessage(this.getClass(), "InterestingHits.createSheet.name.desc"),
                     getName()));
 
-            return s;
+            return sheet;
         }
 
         @Override
-        public <T> T accept(DisplayableItemNodeVisitor<T> v) {
-            return v.visit(this);
+        public <T> T accept(DisplayableItemNodeVisitor<T> visitor) {
+            return visitor.visit(this);
         }
 
         @Override
@@ -333,40 +361,158 @@ public class InterestingHits implements AutopsyVisitableItem {
         }
     }
 
-    private class HitFactory extends ChildFactory<Long> implements Observer {
+    private class HitTypeFactory extends ChildFactory<String> implements Observer {
 
         private final String setName;
+        private final Map<Long, BlackboardArtifact> artifactHits = new HashMap<>();
 
-        private HitFactory(String setName) {
+        private HitTypeFactory(String setName) {
             super();
             this.setName = setName;
             interestingResults.addObserver(this);
         }
 
         @Override
-        protected boolean createKeys(List<Long> list) {
-            for (long l : interestingResults.getArtifactIds(setName)) {
-                list.add(l);
-            }
+        protected boolean createKeys(List<String> list) {
+            list.add(BlackboardArtifact.ARTIFACT_TYPE.TSK_INTERESTING_FILE_HIT.getDisplayName());
+            list.add(BlackboardArtifact.ARTIFACT_TYPE.TSK_INTERESTING_ARTIFACT_HIT.getDisplayName());
             return true;
         }
 
         @Override
-        protected Node createNodeForKey(Long l) {
-            if (skCase == null) {
-                return null;
-            }
-            try {
-                return new BlackboardArtifactNode(skCase.getBlackboardArtifact(l));
-            } catch (TskCoreException ex) {
-                logger.log(Level.SEVERE, "Error creating new Blackboard Artifact node", ex); //NON-NLS
-                return null;
-            }
+        protected Node createNodeForKey(String key) {
+            return new InterestingItemTypeNode(setName, key);
         }
 
         @Override
         public void update(Observable o, Object arg) {
             refresh(true);
+        }
+    }
+
+    public class InterestingItemTypeNode extends DisplayableItemNode implements Observer {
+
+        private final String typeName;
+        private final String setName;
+
+        private InterestingItemTypeNode(String setName, String typeName) {
+            super(Children.create(new HitFactory(setName, typeName), true), Lookups.singleton(setName));
+            this.typeName = typeName;
+            this.setName = setName;
+            /**
+             * We use the combination of setName and typeName as the name of
+             * the node to ensure that nodes have a unique name. This comes into
+             * play when associating paging state with the node.
+             */
+            super.setName(setName + "_" + typeName);
+            updateDisplayName();
+            this.setIconBaseWithExtension("org/sleuthkit/autopsy/images/interesting_item.png"); //NON-NLS
+            interestingResults.addObserver(this);
+        }
+
+        private void updateDisplayName() {
+            super.setDisplayName(typeName + " (" + interestingResults.getArtifactIds(setName, typeName).size() + ")");
+        }
+
+        @Override
+        public boolean isLeafTypeNode() {
+            return true;
+        }
+
+        @Override
+        protected Sheet createSheet() {
+            Sheet sheet = super.createSheet();
+            Sheet.Set sheetSet = sheet.get(Sheet.PROPERTIES);
+            if (sheetSet == null) {
+                sheetSet = Sheet.createPropertiesSet();
+                sheet.put(sheetSet);
+            }
+            sheetSet.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "InterestingHits.createSheet.name.name"),
+                    NbBundle.getMessage(this.getClass(), "InterestingHits.createSheet.name.name"),
+                    NbBundle.getMessage(this.getClass(), "InterestingHits.createSheet.name.desc"),
+                    getName()));
+            return sheet;
+        }
+
+        @Override
+        public <T> T accept(DisplayableItemNodeVisitor<T> visitor) {
+            return visitor.visit(this);
+        }
+
+        @Override
+        public void update(Observable o, Object arg) {
+            updateDisplayName();
+        }
+
+        @Override
+        public String getItemType() {
+            /**
+             * For custom settings for each rule set, return
+             * getClass().getName() + setName instead.
+             */
+            return getClass().getName();
+        }
+    }
+
+    private class HitFactory extends BaseChildFactory<BlackboardArtifact> implements Observer {
+
+        private final String setName;
+        private final String typeName;
+        private final Map<Long, BlackboardArtifact> artifactHits = new HashMap<>();
+
+        private HitFactory(String setName, String typeName) {
+            /**
+             * The node name passed to the parent constructor must be the
+             * same as the name set in the InterestingItemTypeNode constructor,
+             * i.e. setName underscore typeName
+             */
+            super(setName + "_" + typeName);
+            this.setName = setName;
+            this.typeName = typeName;
+            interestingResults.addObserver(this);
+        }
+
+        @Override
+        protected List<BlackboardArtifact> makeKeys() {
+
+            if (skCase != null) {
+                interestingResults.getArtifactIds(setName, typeName).forEach((id) -> {
+                    try {
+                        if (!artifactHits.containsKey(id)) {
+                            BlackboardArtifact art = skCase.getBlackboardArtifact(id);
+                            //Cache attributes while we are off the EDT.
+                            //See JIRA-5969
+                            art.getAttributes();
+                            artifactHits.put(id, art);
+                        }
+                    } catch (TskCoreException ex) {
+                        logger.log(Level.SEVERE, "TSK Exception occurred", ex); //NON-NLS
+                    }
+                });
+
+                return new ArrayList<>(artifactHits.values());
+            }
+            return Collections.emptyList();
+        }
+
+        @Override
+        protected Node createNodeForKey(BlackboardArtifact art) {
+            return new BlackboardArtifactNode(art);
+        }
+
+        @Override
+        public void update(Observable o, Object arg) {
+            refresh(true);
+        }
+
+        @Override
+        protected void onAdd() {
+            // No-op
+        }
+
+        @Override
+        protected void onRemove() {
+            // No-op
         }
     }
 }

@@ -47,11 +47,11 @@ import org.sleuthkit.autopsy.keywordsearch.KeywordListsManager;
 import org.sleuthkit.autopsy.modules.hashdatabase.HashDbManager;
 import org.sleuthkit.datamodel.TskCoreException;
 import org.sleuthkit.autopsy.core.ServicesMonitor;
-import org.sleuthkit.autopsy.modules.hashdatabase.HashDbManager.HashDb;
 import org.sleuthkit.autopsy.experimental.configuration.AutoIngestSettingsPanel.UpdateConfigSwingWorker;
-import org.sleuthkit.autopsy.experimental.coordinationservice.CoordinationService;
-import org.sleuthkit.autopsy.experimental.coordinationservice.CoordinationService.Lock;
-import org.sleuthkit.autopsy.experimental.coordinationservice.CoordinationService.CoordinationServiceException;
+import org.sleuthkit.autopsy.coordinationservice.CoordinationService;
+import org.sleuthkit.autopsy.coordinationservice.CoordinationService.CategoryNode;
+import org.sleuthkit.autopsy.coordinationservice.CoordinationService.Lock;
+import org.sleuthkit.autopsy.coordinationservice.CoordinationService.CoordinationServiceException;
 
 /*
  * A utility class for loading and saving shared configuration data
@@ -78,6 +78,7 @@ public class SharedConfiguration {
     private static final String HASHDB_CONFIG_FILE_NAME = "hashLookup.settings"; //NON-NLS
     private static final String HASHDB_CONFIG_FILE_NAME_LEGACY = "hashsets.xml"; //NON-NLS
     public static final String FILE_EXPORTER_SETTINGS_FILE = "fileexporter.settings"; //NON-NLS
+    private static final String CENTRAL_REPOSITORY_PROPERTIES_FILE = "CentralRepository.properties"; //NON-NLS
     private static final String SHARED_CONFIG_VERSIONS = "SharedConfigVersions.txt"; //NON-NLS
 
     // Folders
@@ -86,13 +87,12 @@ public class SharedConfiguration {
     private static final String PREFERENCES_FOLDER = "Preferences"; //NON-NLS
     public static final String FILE_EXPORTER_FOLDER = "Automated File Exporter"; //NON-NLS
 
-    private static final String LOCK_ROOT = "/autopsy"; // NON-NLS
     private static final String UPLOAD_IN_PROGRESS_FILE = "uploadInProgress"; // NON-NLS
     private static final String moduleDirPath = PlatformUtil.getUserConfigDirectory();
     private static final Logger logger = Logger.getLogger(SharedConfiguration.class.getName());
 
     private final UpdateConfigSwingWorker swingWorker;
-    private AutoIngestUserPreferences.SelectedMode mode;
+    private UserPreferences.SelectedMode mode;
     private String sharedConfigFolder;
     private int fileIngestThreads;
     private boolean sharedConfigMaster;
@@ -160,7 +160,7 @@ public class SharedConfiguration {
 
         File remoteFolder = getSharedFolder();
 
-        try (Lock writeLock = CoordinationService.getInstance(LOCK_ROOT).tryGetExclusiveLock(CoordinationService.CategoryNode.CONFIG, remoteFolder.getAbsolutePath(), 30, TimeUnit.MINUTES)) {
+        try (Lock writeLock = CoordinationService.getInstance().tryGetExclusiveLock(CategoryNode.CONFIG, remoteFolder.getAbsolutePath(), 30, TimeUnit.MINUTES)) {
             if (writeLock == null) {
                 logger.log(Level.INFO, String.format("Failed to lock %s - another node is currently uploading or downloading configuration", remoteFolder.getAbsolutePath()));
                 return SharedConfigResult.LOCKED;
@@ -205,6 +205,9 @@ public class SharedConfiguration {
             uploadMultiUserAndGeneralSettings(remoteFolder);
             uploadHashDbSettings(remoteFolder);
             uploadFileExporterSettings(remoteFolder);
+            uploadCentralRepositorySettings(remoteFolder);
+            uploadObjectDetectionClassifiers(remoteFolder);
+            uploadPythonModules(remoteFolder);
 
             try {
                 Files.deleteIfExists(uploadInProgress.toPath());
@@ -230,7 +233,7 @@ public class SharedConfiguration {
 
         File remoteFolder = getSharedFolder();
 
-        try (Lock readLock = CoordinationService.getInstance(LOCK_ROOT).tryGetSharedLock(CoordinationService.CategoryNode.CONFIG, remoteFolder.getAbsolutePath(), 30, TimeUnit.MINUTES)) {
+        try (Lock readLock = CoordinationService.getInstance().tryGetSharedLock(CategoryNode.CONFIG, remoteFolder.getAbsolutePath(), 30, TimeUnit.MINUTES)) {
             if (readLock == null) {
                 return SharedConfigResult.LOCKED;
             }
@@ -269,6 +272,9 @@ public class SharedConfiguration {
             downloadFileExtMismatchSettings(remoteFolder);
             downloadAndroidTriageSettings(remoteFolder);
             downloadFileExporterSettings(remoteFolder);
+            downloadCentralRepositorySettings(remoteFolder);
+            downloadObjectDetectionClassifiers(remoteFolder);
+            downloadPythonModules(remoteFolder);
 
             // Download general settings, then restore the current
             // values for the unshared fields
@@ -361,7 +367,7 @@ public class SharedConfiguration {
         UserPreferences.setKeepPreferredContentViewer(keepPreferredViewer);
         UserPreferences.setNumberOfFileIngestThreads(fileIngestThreads);
         UserPreferences.setHideSlackFilesInDataSourcesTree(hideSlackFilesInDataSource);
-        UserPreferences.setHideSlackFilesInViewsTree(hideSlackFilesInViews); 
+        UserPreferences.setHideSlackFilesInViewsTree(hideSlackFilesInViews);
     }
 
     /**
@@ -509,6 +515,71 @@ public class SharedConfiguration {
             throw new SharedConfigurationException(String.format("Failed to copy %s to %s", remoteFile.getAbsolutePath(), localSettingsFolder.getAbsolutePath()), ex);
         }
     }
+    
+    /**
+     * Copy an entire local settings folder to the remote folder, deleting any existing files.
+     * 
+     * @param localFolder      The local folder to copy
+     * @param remoteBaseFolder The remote folder that will hold a copy of the original folder
+     * 
+     * @throws SharedConfigurationException 
+     */
+    private void copyLocalFolderToRemoteFolder(File localFolder, File remoteBaseFolder) throws SharedConfigurationException {
+        logger.log(Level.INFO, "Uploading {0} to {1}", new Object[]{localFolder.getAbsolutePath(), remoteBaseFolder.getAbsolutePath()});
+        
+        File newRemoteFolder = new File(remoteBaseFolder, localFolder.getName());
+        
+        if(newRemoteFolder.exists()) {
+            try {
+                FileUtils.deleteDirectory(newRemoteFolder);
+            } catch (IOException ex) {
+                logger.log(Level.SEVERE, "Failed to delete remote folder {0}", newRemoteFolder.getAbsolutePath());
+                throw new SharedConfigurationException(String.format("Failed to delete remote folder {0}", newRemoteFolder.getAbsolutePath()), ex);
+            }
+        }
+        
+        try {
+            FileUtils.copyDirectoryToDirectory(localFolder, remoteBaseFolder);
+        } catch (IOException ex) {
+            throw new SharedConfigurationException(String.format("Failed to copy %s to %s", localFolder, remoteBaseFolder.getAbsolutePath()), ex);
+        } 
+    }
+    
+    /**
+     * Copy an entire remote settings folder to the local folder, deleting any existing files.
+     * No error if the remote folder does not exist.
+     * 
+     * @param localFolder      The local folder that will be overwritten.
+     * @param remoteBaseFolder The remote folder holding the folder that will be copied
+     * 
+     * @throws SharedConfigurationException 
+     */
+    private void copyRemoteFolderToLocalFolder(File localFolder, File remoteBaseFolder) throws SharedConfigurationException {
+        logger.log(Level.INFO, "Downloading {0} from {1}", new Object[]{localFolder.getAbsolutePath(), remoteBaseFolder.getAbsolutePath()});
+        
+        // Clean out the local folder regardless of whether the remote version exists. leave the 
+        // folder in place since Autopsy expects it to exist.
+        if(localFolder.exists()) {
+            try {
+                FileUtils.cleanDirectory(localFolder);
+            } catch (IOException ex) {
+                logger.log(Level.SEVERE, "Failed to delete files from local folder {0}", localFolder.getAbsolutePath());
+                throw new SharedConfigurationException(String.format("Failed to delete files from local folder {0}", localFolder.getAbsolutePath()), ex);
+            }
+        }
+        
+        File remoteSubFolder = new File(remoteBaseFolder, localFolder.getName());
+        if(! remoteSubFolder.exists()) {
+            logger.log(Level.INFO, "{0} does not exist", remoteSubFolder.getAbsolutePath());
+            return;
+        }
+        
+        try {
+            FileUtils.copyDirectory(remoteSubFolder, localFolder);
+        } catch (IOException ex) {
+            throw new SharedConfigurationException(String.format("Failed to copy %s from %s", localFolder, remoteBaseFolder.getAbsolutePath()), ex);
+        } 
+    }    
 
     /**
      * Upload the basic set of auto-ingest settings to the shared folder.
@@ -775,6 +846,30 @@ public class SharedConfiguration {
     }
 
     /**
+     * Upload central repository settings.
+     *
+     * @param remoteFolder Shared settings folder
+     *
+     * @throws SharedConfigurationException
+     */
+    private void uploadCentralRepositorySettings(File remoteFolder) throws SharedConfigurationException {
+        publishTask("Uploading central repository configuration");
+        copyToRemoteFolder(CENTRAL_REPOSITORY_PROPERTIES_FILE, moduleDirPath, remoteFolder, true);
+    }
+
+    /**
+     * Download central repository settings.
+     *
+     * @param remoteFolder Shared settings folder
+     *
+     * @throws SharedConfigurationException
+     */
+    private void downloadCentralRepositorySettings(File remoteFolder) throws SharedConfigurationException {
+        publishTask("Downloading central repository configuration");
+        copyToLocalFolder(CENTRAL_REPOSITORY_PROPERTIES_FILE, moduleDirPath, remoteFolder, true);
+    }
+
+    /**
      * Upload multi-user settings and other general Autopsy settings
      *
      * @param remoteFolder Shared settings folder
@@ -802,6 +897,58 @@ public class SharedConfiguration {
         copyToLocalFolder(AUTO_INGEST_PROPERTIES, moduleDirPath, remoteFolder, false);
     }
 
+    /**
+     * Upload the object detection classifiers.
+     * 
+     * @param remoteFolder Shared settings folder
+     * 
+     * @throws SharedConfigurationException 
+     */
+    private void uploadObjectDetectionClassifiers(File remoteFolder) throws SharedConfigurationException {
+        publishTask("Uploading object detection classfiers");
+        File classifiersFolder = new File(PlatformUtil.getObjectDetectionClassifierPath());
+        copyLocalFolderToRemoteFolder(classifiersFolder, remoteFolder);
+    }
+    
+    /**
+     * Download the object detection classifiers.
+     * 
+     * @param remoteFolder Shared settings folder
+     * 
+     * @throws SharedConfigurationException 
+     */
+    private void downloadObjectDetectionClassifiers(File remoteFolder) throws SharedConfigurationException {
+        publishTask("Downloading object detection classfiers");
+        File classifiersFolder = new File(PlatformUtil.getObjectDetectionClassifierPath());
+        copyRemoteFolderToLocalFolder(classifiersFolder, remoteFolder);
+    }
+    
+        /**
+     * Upload the Python modules.
+     * 
+     * @param remoteFolder Shared settings folder
+     * 
+     * @throws SharedConfigurationException 
+     */
+    private void uploadPythonModules(File remoteFolder) throws SharedConfigurationException {
+        publishTask("Uploading python modules");
+        File classifiersFolder = new File(PlatformUtil.getUserPythonModulesPath());
+        copyLocalFolderToRemoteFolder(classifiersFolder, remoteFolder);
+    }
+    
+    /**
+     * Download the Python modules.
+     * 
+     * @param remoteFolder Shared settings folder
+     * 
+     * @throws SharedConfigurationException 
+     */
+    private void downloadPythonModules(File remoteFolder) throws SharedConfigurationException {
+        publishTask("Downloading python modules");
+        File classifiersFolder = new File(PlatformUtil.getUserPythonModulesPath());
+        copyRemoteFolderToLocalFolder(classifiersFolder, remoteFolder);
+    }
+    
     /**
      * Upload settings and hash databases to the shared folder. The general
      * algorithm is: - Copy the general settings in hashsets.xml - For each hash
@@ -849,7 +996,7 @@ public class SharedConfiguration {
 
                 if (!sharedDbPath.exists()) {
                     if (!sharedDbPath.mkdirs()) {
-                        throw new SharedConfigurationException("Error creating shared hash database directory " + sharedDbPath.getAbsolutePath());
+                        throw new SharedConfigurationException("Error creating shared hash set directory " + sharedDbPath.getAbsolutePath());
                     }
                 }
 
@@ -983,7 +1130,7 @@ public class SharedConfiguration {
 
                     if (!localDb.getParentFile().exists()) {
                         if (!localDb.getParentFile().mkdirs()) {
-                            throw new SharedConfigurationException("Error creating hash database directory " + localDb.getParentFile().getAbsolutePath());
+                            throw new SharedConfigurationException("Error creating hash set directory " + localDb.getParentFile().getAbsolutePath());
                         }
                     }
 
@@ -998,7 +1145,7 @@ public class SharedConfiguration {
                                     break;
                                 }
                             } catch (TskCoreException ex) {
-                                throw new SharedConfigurationException(String.format("Error getting hash database path info for %s", localDb.getParentFile().getAbsolutePath()), ex);
+                                throw new SharedConfigurationException(String.format("Error getting hash set path info for %s", localDb.getParentFile().getAbsolutePath()), ex);
                             }
                         }
 
@@ -1006,7 +1153,7 @@ public class SharedConfiguration {
                             try {
                                 HashDbManager.getInstance().removeHashDatabase(matchingDb);
                             } catch (HashDbManager.HashDbManagerException ex) {
-                                throw new SharedConfigurationException(String.format("Error updating hash database info for %s", localDb.getAbsolutePath()), ex);
+                                throw new SharedConfigurationException(String.format("Error updating hash set info for %s", localDb.getAbsolutePath()), ex);
                             }
 
                         }
@@ -1095,7 +1242,12 @@ public class SharedConfiguration {
         try {
             HashDbManager hashDbManager = HashDbManager.getInstance();
             hashDbManager.loadLastSavedConfiguration();
-            for (HashDb hashDb : hashDbManager.getAllHashSets()) {
+            for (HashDbManager.HashDb hashDb : hashDbManager.getAllHashSets()) {
+                // Central Repository hash sets have no path and don't need to be copied
+                if (hashDb.getIndexPath().isEmpty() && hashDb.getDatabasePath().isEmpty()) {
+                    continue;
+                }
+				
                 if (hashDb.hasIndexOnly()) {
                     results.add(hashDb.getIndexPath());
                 } else {
@@ -1103,7 +1255,7 @@ public class SharedConfiguration {
                 }
             }
         } catch (TskCoreException ex) {
-            throw new SharedConfigurationException("Unable to read hash databases", ex);
+            throw new SharedConfigurationException("Unable to read hash sets", ex);
         }
         return results;
     }

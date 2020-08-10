@@ -1,15 +1,15 @@
 /*
  * Autopsy Forensic Browser
- * 
- * Copyright 2011-2016 Basis Technology Corp.
+ *
+ * Copyright 2011-2019 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- * 
+ *
  *     http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -24,98 +24,99 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Observable;
 import java.util.Observer;
+import java.util.Set;
 import java.util.logging.Level;
-import org.openide.nodes.AbstractNode;
+import java.util.stream.Collectors;
+import org.apache.commons.lang3.StringUtils;
 import org.openide.nodes.ChildFactory;
 import org.openide.nodes.Children;
 import org.openide.nodes.Node;
+import org.openide.nodes.Sheet;
 import org.openide.util.NbBundle;
+import org.openide.util.lookup.Lookups;
 import org.sleuthkit.autopsy.casemodule.Case;
-import org.sleuthkit.autopsy.core.UserPreferences;
+import org.sleuthkit.autopsy.casemodule.NoCurrentCaseException;
+import static org.sleuthkit.autopsy.core.UserPreferences.hideKnownFilesInViewsTree;
+import static org.sleuthkit.autopsy.core.UserPreferences.hideSlackFilesInViewsTree;
 import org.sleuthkit.autopsy.coreutils.Logger;
+import org.sleuthkit.autopsy.datamodel.FileTypes.FileTypesKey;
 import org.sleuthkit.autopsy.ingest.IngestManager;
-import org.sleuthkit.datamodel.AbstractFile;
-import org.sleuthkit.datamodel.Content;
-import org.sleuthkit.datamodel.ContentVisitor;
-import org.sleuthkit.datamodel.DerivedFile;
-import org.sleuthkit.datamodel.Directory;
-import org.sleuthkit.datamodel.File;
-import org.sleuthkit.datamodel.LayoutFile;
-import org.sleuthkit.datamodel.LocalFile;
 import org.sleuthkit.datamodel.SleuthkitCase;
 import org.sleuthkit.datamodel.TskCoreException;
 import org.sleuthkit.datamodel.TskData;
+import org.sleuthkit.autopsy.guiutils.RefreshThrottler;
 
 /**
  * Class which contains the Nodes for the 'By Mime Type' view located in the
  * File Types view, shows all files with a mime type. Will initially be empty
  * until file type identification has been performed. Contains a Property Change
  * Listener which is checking for changes in IngestJobEvent Completed or
- * Cancelled and IngestModuleEvent Content Changed.
+ * Canceled and IngestModuleEvent Content Changed.
  */
 public final class FileTypesByMimeType extends Observable implements AutopsyVisitableItem {
 
+    private final static Logger logger = Logger.getLogger(FileTypesByMimeType.class.getName());
+    private static final Set<IngestManager.IngestJobEvent> INGEST_JOB_EVENTS_OF_INTEREST = EnumSet.of(IngestManager.IngestJobEvent.COMPLETED, IngestManager.IngestJobEvent.CANCELLED);
     private final SleuthkitCase skCase;
     /**
      * The nodes of this tree will be determined dynamically by the mimetypes
      * which exist in the database. This hashmap will store them with the media
-     * type as the key and a list of media subtypes as the value.
+     * type as the key and a Map, from media subtype to count, as the value.
      */
-    private final HashMap<String, List<String>> existingMimeTypes = new HashMap<>();
-    private static final Logger LOGGER = Logger.getLogger(FileTypesByMimeType.class.getName());
+    private final HashMap<String, Map<String, Long>> existingMimeTypeCounts = new HashMap<>();
+    /**
+     * Root of the File Types tree. Used to provide single answer to question:
+     * Should the child counts be shown next to the nodes?
+     */
+    private final FileTypes typesRoot;
+
+    /**
+     * The pcl is in the class because it has the easiest mechanisms to add and
+     * remove itself during its life cycles.
+     */
+    private final PropertyChangeListener pcl;
+
+    private static final Set<Case.Events> CASE_EVENTS_OF_INTEREST = EnumSet.of(Case.Events.DATA_SOURCE_ADDED, Case.Events.CURRENT_CASE);
+
+    /**
+     * RefreshThrottler is used to limit the number of refreshes performed when
+     * CONTENT_CHANGED and DATA_ADDED ingest module events are received.
+     */
+    private final RefreshThrottler refreshThrottler;
+
+    /**
+     * Create the base expression used as the where clause in the queries for
+     * files by mime type. Filters out certain kinds of files and directories,
+     * and known/slack files based on user preferences.
+     *
+     * @return The base expression to be used in the where clause of queries for
+     * files by mime type.
+     */
+    private String createBaseWhereExpr() {
+        return "(dir_type = " + TskData.TSK_FS_NAME_TYPE_ENUM.REG.getValue() + ")"
+                + " AND (type IN ("
+                + TskData.TSK_DB_FILES_TYPE_ENUM.FS.ordinal() + ","
+                + TskData.TSK_DB_FILES_TYPE_ENUM.CARVED.ordinal() + ","
+                + TskData.TSK_DB_FILES_TYPE_ENUM.DERIVED.ordinal() + ","
+                + TskData.TSK_DB_FILES_TYPE_ENUM.LAYOUT_FILE.ordinal() + ","
+                + TskData.TSK_DB_FILES_TYPE_ENUM.LOCAL.ordinal()
+                + (hideSlackFilesInViewsTree() ? "" : ("," + TskData.TSK_DB_FILES_TYPE_ENUM.SLACK.ordinal()))
+                + "))"
+                + ((filteringDataSourceObjId() > 0) ? " AND data_source_obj_id = " + this.filteringDataSourceObjId() : " ")
+                + (hideKnownFilesInViewsTree() ? (" AND (known IS NULL OR known != " + TskData.FileKnown.KNOWN.getFileKnownValue() + ")") : "");
+    }
 
     private void removeListeners() {
         deleteObservers();
         IngestManager.getInstance().removeIngestJobEventListener(pcl);
-        Case.removePropertyChangeListener(pcl);
-    }
-
-    /*
-         * The pcl is in the class because it has the easiest mechanisms to add
-         * and remove itself during its life cycles.
-     */
-    private final PropertyChangeListener pcl = (PropertyChangeEvent evt) -> {
-        String eventType = evt.getPropertyName();
-        if (eventType.equals(IngestManager.IngestJobEvent.COMPLETED.toString())
-                || eventType.equals(IngestManager.IngestJobEvent.CANCELLED.toString())) {
-
-            /**
-             * Checking for a current case is a stop gap measure until a
-             * different way of handling the closing of cases is worked out.
-             * Currently, remote events may be received for a case that is
-             * already closed.
-             */
-            try {
-                Case.getCurrentCase();
-                populateHashMap();
-            } catch (IllegalStateException notUsed) {
-                /**
-                 * Case is closed, do nothing.
-                 */
-            }
-        } else if (eventType.equals(Case.Events.CURRENT_CASE.toString())) {
-            if (evt.getNewValue() == null) {
-                removeListeners();
-            }
-        }
-    };
-
-    /**
-     * Retrieve the media types by retrieving the keyset from the hashmap.
-     *
-     * @return mediaTypes - a list of strings representing all distinct media
-     * types of files for this case
-     */
-    private List<String> getMediaTypeList() {
-        synchronized (existingMimeTypes) {
-            List<String> mediaTypes = new ArrayList<>(existingMimeTypes.keySet());
-            Collections.sort(mediaTypes);
-            return mediaTypes;
-        }
+        refreshThrottler.unregisterEventListener();
+        Case.removeEventTypeSubscriber(CASE_EVENTS_OF_INTEREST, pcl);
     }
 
     /**
@@ -123,54 +124,70 @@ public final class FileTypesByMimeType extends Observable implements AutopsyVisi
      * files in it, and populate the hashmap with those results.
      */
     private void populateHashMap() {
-        StringBuilder allDistinctMimeTypesQuery = new StringBuilder();
-        allDistinctMimeTypesQuery.append("SELECT DISTINCT mime_type from tsk_files where mime_type IS NOT null");  //NON-NLS
-        allDistinctMimeTypesQuery.append(" AND dir_type = ").append(TskData.TSK_FS_NAME_TYPE_ENUM.REG.getValue()); //NON-NLS
-        allDistinctMimeTypesQuery.append(" AND (type IN (").append(TskData.TSK_DB_FILES_TYPE_ENUM.FS.ordinal()).append(","); //NON-NLS
-        allDistinctMimeTypesQuery.append(TskData.TSK_DB_FILES_TYPE_ENUM.CARVED.ordinal()).append(",");
-        allDistinctMimeTypesQuery.append(TskData.TSK_DB_FILES_TYPE_ENUM.DERIVED.ordinal()).append(",");
-        allDistinctMimeTypesQuery.append(TskData.TSK_DB_FILES_TYPE_ENUM.LOCAL.ordinal()).append("))");
-        synchronized (existingMimeTypes) {
-            existingMimeTypes.clear();
+        String query = "SELECT mime_type, count(*) AS count FROM tsk_files "
+                + " WHERE mime_type IS NOT null "
+                + " AND " + createBaseWhereExpr()
+                + " GROUP BY mime_type";
+        synchronized (existingMimeTypeCounts) {
+            existingMimeTypeCounts.clear();
 
             if (skCase == null) {
-
                 return;
             }
-            try (SleuthkitCase.CaseDbQuery dbQuery = skCase.executeQuery(allDistinctMimeTypesQuery.toString())) {
+            try (SleuthkitCase.CaseDbQuery dbQuery = skCase.executeQuery(query)) {
                 ResultSet resultSet = dbQuery.getResultSet();
                 while (resultSet.next()) {
                     final String mime_type = resultSet.getString("mime_type"); //NON-NLS
                     if (!mime_type.isEmpty()) {
-                        String mimeType[] = mime_type.split("/");
-                        if (!mimeType[0].isEmpty() && !mimeType[1].isEmpty()) {
-                            if (!existingMimeTypes.containsKey(mimeType[0])) {
-                                existingMimeTypes.put(mimeType[0], new ArrayList<>());
-                            }
-                            existingMimeTypes.get(mimeType[0]).add(mimeType[1]);
+                        //if the mime_type contained multiple slashes then everything after the first slash will become the subtype
+                        final String mediaType = StringUtils.substringBefore(mime_type, "/");
+                        final String subType = StringUtils.removeStart(mime_type, mediaType + "/");
+                        if (!mediaType.isEmpty() && !subType.isEmpty()) {
+                            final long count = resultSet.getLong("count");
+                            existingMimeTypeCounts.computeIfAbsent(mediaType, t -> new HashMap<>())
+                                    .put(subType, count);
                         }
                     }
                 }
             } catch (TskCoreException | SQLException ex) {
-                LOGGER.log(Level.SEVERE, "Unable to populate File Types by MIME Type tree view from DB: ", ex); //NON-NLS
+                logger.log(Level.SEVERE, "Unable to populate File Types by MIME Type tree view from DB: ", ex); //NON-NLS
             }
         }
 
         setChanged();
-
         notifyObservers();
     }
 
-    FileTypesByMimeType(SleuthkitCase skCase) {
-        IngestManager.getInstance().addIngestJobEventListener(pcl);
-        Case.addPropertyChangeListener(pcl);
-        this.skCase = skCase;
+    FileTypesByMimeType(FileTypes typesRoot) {
+        this.skCase = typesRoot.getSleuthkitCase();
+        this.typesRoot = typesRoot;
+        this.pcl = (PropertyChangeEvent evt) -> {
+            String eventType = evt.getPropertyName();
+            if (eventType.equals(IngestManager.IngestJobEvent.COMPLETED.toString())
+                    || eventType.equals(IngestManager.IngestJobEvent.CANCELLED.toString())
+                    || eventType.equals(Case.Events.DATA_SOURCE_ADDED.toString())) {
+
+                refreshMimeTypes();
+            } else if (eventType.equals(Case.Events.CURRENT_CASE.toString())) {
+                if (evt.getNewValue() == null) {
+                    removeListeners();
+                }
+            }
+        };
+        refreshThrottler = new RefreshThrottler(new FileTypesByMimeTypeRefresher());
+        IngestManager.getInstance().addIngestJobEventListener(INGEST_JOB_EVENTS_OF_INTEREST, pcl);
+        refreshThrottler.registerForIngestModuleEvents();
+        Case.addEventTypeSubscriber(CASE_EVENTS_OF_INTEREST, pcl);
         populateHashMap();
     }
 
     @Override
-    public <T> T accept(AutopsyItemVisitor<T> v) {
-        return v.visit(this);
+    public <T> T accept(AutopsyItemVisitor<T> visitor) {
+        return visitor.visit(this);
+    }
+
+    long filteringDataSourceObjId() {
+        return typesRoot.filteringDataSourceObjId();
     }
 
     /**
@@ -178,6 +195,7 @@ public final class FileTypesByMimeType extends Observable implements AutopsyVisi
      * empty.
      *
      * @param node the Node which you wish to check.
+     *
      * @return True if originNode is an instance of ByMimeTypeNode and is empty,
      * false otherwise.
      */
@@ -190,6 +208,41 @@ public final class FileTypesByMimeType extends Observable implements AutopsyVisi
 
     }
 
+    private void refreshMimeTypes() {
+        /**
+         * Checking for a current case is a stop gap measure until a different
+         * way of handling the closing of cases is worked out. Currently, remote
+         * events may be received for a case that is already closed.
+         */
+        try {
+            Case.getCurrentCaseThrows();
+            typesRoot.updateShowCounts();
+            populateHashMap();
+        } catch (NoCurrentCaseException notUsed) {
+            /**
+             * Case is closed, do nothing.
+             */
+        }
+    }
+
+    /**
+     * Responsible for updating the 'By Mime Type' view in the UI. See
+     * RefreshThrottler for more details.
+     */
+    private class FileTypesByMimeTypeRefresher implements RefreshThrottler.Refresher {
+
+        @Override
+        public void refresh() {
+            refreshMimeTypes();
+        }
+
+        @Override
+        public boolean isRefreshRequired(PropertyChangeEvent evt) {
+            return true;
+        }
+
+    }
+
     /**
      * Class which represents the root node of the "By MIME Type" tree, will
      * have children of each media type present in the database or no children
@@ -198,11 +251,12 @@ public final class FileTypesByMimeType extends Observable implements AutopsyVisi
      */
     class ByMimeTypeNode extends DisplayableItemNode {
 
-        @NbBundle.Messages("FileTypesByMimeType.name.text=By MIME Type")
+        @NbBundle.Messages({"FileTypesByMimeType.name.text=By MIME Type"})
+
         final String NAME = Bundle.FileTypesByMimeType_name_text();
 
         ByMimeTypeNode() {
-            super(Children.create(new ByMimeTypeNodeChildren(), true));
+            super(Children.create(new ByMimeTypeNodeChildren(), true), Lookups.singleton(Bundle.FileTypesByMimeType_name_text()));
             super.setName(NAME);
             super.setDisplayName(NAME);
             this.setIconBaseWithExtension("org/sleuthkit/autopsy/images/file_types.png");
@@ -214,8 +268,8 @@ public final class FileTypesByMimeType extends Observable implements AutopsyVisi
         }
 
         @Override
-        public <T> T accept(DisplayableItemNodeVisitor<T> v) {
-            return v.visit(this);
+        public <T> T accept(DisplayableItemNodeVisitor<T> visitor) {
+            return visitor.visit(this);
         }
 
         @Override
@@ -224,9 +278,10 @@ public final class FileTypesByMimeType extends Observable implements AutopsyVisi
         }
 
         boolean isEmpty() {
-            return existingMimeTypes.isEmpty();
+            synchronized (existingMimeTypeCounts) {
+                return existingMimeTypeCounts.isEmpty();
+            }
         }
-
     }
 
     /**
@@ -242,9 +297,13 @@ public final class FileTypesByMimeType extends Observable implements AutopsyVisi
 
         @Override
         protected boolean createKeys(List<String> mediaTypeNodes) {
-            if (!existingMimeTypes.isEmpty()) {
-                mediaTypeNodes.addAll(getMediaTypeList());
+            final List<String> keylist;
+            synchronized (existingMimeTypeCounts) {
+                keylist = new ArrayList<>(existingMimeTypeCounts.keySet());
             }
+            Collections.sort(keylist);
+            mediaTypeNodes.addAll(keylist);
+
             return true;
         }
 
@@ -257,7 +316,6 @@ public final class FileTypesByMimeType extends Observable implements AutopsyVisi
         public void update(Observable o, Object arg) {
             refresh(true);
         }
-
     }
 
     /**
@@ -266,8 +324,12 @@ public final class FileTypesByMimeType extends Observable implements AutopsyVisi
      */
     class MediaTypeNode extends DisplayableItemNode {
 
+        @NbBundle.Messages({"FileTypesByMimeTypeNode.createSheet.mediaType.name=Type",
+            "FileTypesByMimeTypeNode.createSheet.mediaType.displayName=Type",
+            "FileTypesByMimeTypeNode.createSheet.mediaType.desc=no description"})
+
         MediaTypeNode(String name) {
-            super(Children.create(new MediaTypeNodeChildren(name), true));
+            super(Children.create(new MediaTypeNodeChildren(name), true), Lookups.singleton(name));
             setName(name);
             setDisplayName(name);
             this.setIconBaseWithExtension("org/sleuthkit/autopsy/images/file_types.png");
@@ -279,8 +341,20 @@ public final class FileTypesByMimeType extends Observable implements AutopsyVisi
         }
 
         @Override
-        public <T> T accept(DisplayableItemNodeVisitor<T> v) {
-            return v.visit(this);
+        public <T> T accept(DisplayableItemNodeVisitor<T> visitor) {
+            return visitor.visit(this);
+        }
+
+        @Override
+        protected Sheet createSheet() {
+            Sheet sheet = super.createSheet();
+            Sheet.Set sheetSet = sheet.get(Sheet.PROPERTIES);
+            if (sheetSet == null) {
+                sheetSet = Sheet.createPropertiesSet();
+                sheet.put(sheetSet);
+            }
+            sheetSet.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "FileTypesByMimeTypeNode.createSheet.mediaType.name"), NbBundle.getMessage(this.getClass(), "FileTypesByMimeTypeNode.createSheet.mediaType.displayName"), NbBundle.getMessage(this.getClass(), "FileTypesByMimeTypeNode.createSheet.mediaType.desc"), getDisplayName()));
+            return sheet;
         }
 
         @Override
@@ -306,7 +380,7 @@ public final class FileTypesByMimeType extends Observable implements AutopsyVisi
 
         @Override
         protected boolean createKeys(List<String> mediaTypeNodes) {
-            mediaTypeNodes.addAll(existingMimeTypes.get(mediaType));
+            mediaTypeNodes.addAll(existingMimeTypeCounts.get(mediaType).keySet());
             return true;
         }
 
@@ -327,32 +401,23 @@ public final class FileTypesByMimeType extends Observable implements AutopsyVisi
      * Node which represents the media sub type in the By MIME type tree, the
      * media subtype is the portion of the MIME type following the /.
      */
-    class MediaSubTypeNode extends DisplayableItemNode implements Observer {
+    final class MediaSubTypeNode extends FileTypes.BGCountUpdatingNode {
+
+        @NbBundle.Messages({"FileTypesByMimeTypeNode.createSheet.mediaSubtype.name=Subtype",
+            "FileTypesByMimeTypeNode.createSheet.mediaSubtype.displayName=Subtype",
+            "FileTypesByMimeTypeNode.createSheet.mediaSubtype.desc=no description"})
+        private final String mimeType;
+        private final String subType;
 
         private MediaSubTypeNode(String mimeType) {
-            super(Children.create(new MediaSubTypeNodeChildren(mimeType), true));
-            addObserver(this);
-            init(mimeType);
-        }
-
-        private void init(String mimeType) {
+            super(typesRoot, Children.create(new MediaSubTypeNodeChildren(mimeType), true), Lookups.singleton(mimeType));
+            this.mimeType = mimeType;
+            this.subType = StringUtils.substringAfter(mimeType, "/");
             super.setName(mimeType);
-            updateDisplayName(mimeType);
+            super.setDisplayName(subType);
+            updateDisplayName();
             this.setIconBaseWithExtension("org/sleuthkit/autopsy/images/file-filter-icon.png"); //NON-NLS
-        }
-
-        /**
-         * Updates the display name of the mediaSubTypeNode to include the count
-         * of files which it represents.
-         *
-         * @param mimeType - the complete MimeType, needed for accurate query
-         * results
-         */
-        private void updateDisplayName(String mimeType) {
-
-            final long count = new MediaSubTypeNodeChildren(mimeType).calculateItems(skCase, mimeType);
-
-            super.setDisplayName(mimeType.split("/")[1] + " (" + count + ")");
+            addObserver(this);
         }
 
         /**
@@ -367,8 +432,20 @@ public final class FileTypesByMimeType extends Observable implements AutopsyVisi
         }
 
         @Override
-        public <T> T accept(DisplayableItemNodeVisitor<T> v) {
-            return v.visit(this);
+        public <T> T accept(DisplayableItemNodeVisitor< T> visitor) {
+            return visitor.visit(this);
+        }
+
+        @Override
+        protected Sheet createSheet() {
+            Sheet sheet = super.createSheet();
+            Sheet.Set sheetSet = sheet.get(Sheet.PROPERTIES);
+            if (sheetSet == null) {
+                sheetSet = Sheet.createPropertiesSet();
+                sheet.put(sheetSet);
+            }
+            sheetSet.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "FileTypesByMimeTypeNode.createSheet.mediaSubtype.name"), NbBundle.getMessage(this.getClass(), "FileTypesByMimeTypeNode.createSheet.mediaSubtype.displayName"), NbBundle.getMessage(this.getClass(), "FileTypesByMimeTypeNode.createSheet.mediaSubtype.desc"), getDisplayName()));
+            return sheet;
         }
 
         @Override
@@ -378,7 +455,17 @@ public final class FileTypesByMimeType extends Observable implements AutopsyVisi
 
         @Override
         public void update(Observable o, Object arg) {
-            updateDisplayName(getName());
+            updateDisplayName();
+        }
+
+        @Override
+        String getDisplayNameBase() {
+            return subType;
+        }
+
+        @Override
+        long calculateChildCount() {
+            return existingMimeTypeCounts.get(StringUtils.substringBefore(mimeType, "/")).get(subType);
         }
     }
 
@@ -387,73 +474,14 @@ public final class FileTypesByMimeType extends Observable implements AutopsyVisi
      * files that match MimeType which is represented by this position in the
      * tree.
      */
-    private class MediaSubTypeNodeChildren extends ChildFactory.Detachable<Content> implements Observer {
+    private class MediaSubTypeNodeChildren extends BaseChildFactory<FileTypesKey> implements Observer {
 
         private final String mimeType;
 
         private MediaSubTypeNodeChildren(String mimeType) {
-            super();
+            super(mimeType, new ViewsKnownAndSlackFilter<>());
             addObserver(this);
             this.mimeType = mimeType;
-        }
-
-        /**
-         * Get children count without actually loading all nodes
-         *
-         * @return count(*) - the number of items that will be shown in this
-         * items Directory Listing
-         */
-        private long calculateItems(SleuthkitCase sleuthkitCase, String mime_type) {
-            try {
-                return sleuthkitCase.countFilesWhere(createQuery(mime_type));
-            } catch (TskCoreException ex) {
-                LOGGER.log(Level.SEVERE, "Error getting file search view count", ex); //NON-NLS
-                return 0;
-            }
-        }
-
-        /**
-         * Uses the createQuery method to complete the query, Select * from
-         * tsk_files WHERE. The results from the database will contain the files
-         * which match this mime type and their information.
-         *
-         * @param list - will contain all files and their attributes from the
-         * tsk_files table where mime_type matches the one specified
-         * @return true
-         */
-        @Override
-        protected boolean createKeys(List<Content> list) {
-            try {
-                List<AbstractFile> files = skCase.findAllFilesWhere(createQuery(mimeType));
-                list.addAll(files);
-            } catch (TskCoreException ex) {
-                LOGGER.log(Level.SEVERE, "Couldn't get search results", ex); //NON-NLS
-            }
-            return true;
-        }
-
-        /**
-         * Create the portion of the query following WHERE for a query of the
-         * database for each file which matches the complete MIME type
-         * represented by this node. Matches against the mime_type column in
-         * tsk_files.
-         *
-         * @param mimeType - the complete mimetype of the file mediatype/subtype
-         * @return query.toString - portion of SQL query which will follow a
-         * WHERE clause.
-         */
-        private String createQuery(String mime_type) {
-            StringBuilder query = new StringBuilder();
-            query.append("(dir_type = ").append(TskData.TSK_FS_NAME_TYPE_ENUM.REG.getValue()).append(")"); //NON-NLS
-            query.append(" AND (type IN (").append(TskData.TSK_DB_FILES_TYPE_ENUM.FS.ordinal()).append(",");  //NON-NLS
-            query.append(TskData.TSK_DB_FILES_TYPE_ENUM.CARVED.ordinal()).append(",");
-            query.append(TskData.TSK_DB_FILES_TYPE_ENUM.DERIVED.ordinal()).append(",");
-            query.append(TskData.TSK_DB_FILES_TYPE_ENUM.LOCAL.ordinal()).append("))");
-            if (UserPreferences.hideKnownFilesInViewsTree()) {
-                query.append(" AND (known IS NULL OR known != ").append(TskData.FileKnown.KNOWN.getFileKnownValue()).append(")"); //NON-NLS
-            }
-            query.append(" AND mime_type = '").append(mime_type).append("'");  //NON-NLS
-            return query.toString();
         }
 
         @Override
@@ -461,47 +489,30 @@ public final class FileTypesByMimeType extends Observable implements AutopsyVisi
             refresh(true);
         }
 
-        /**
-         * Creates the content to populate the Directory Listing Table view for
-         * each file
-         *
-         * @param key
-         * @return
-         */
         @Override
-        protected Node createNodeForKey(Content key) {
-            return key.accept(new ContentVisitor.Default<AbstractNode>() {
-                @Override
-                public FileNode visit(File f) {
-                    return new FileNode(f, false);
-                }
+        protected Node createNodeForKey(FileTypesKey key) {
+            return key.accept(new FileTypes.FileNodeCreationVisitor());
+        }
 
-                @Override
-                public DirectoryNode visit(Directory d) {
-                    return new DirectoryNode(d);
-                }
+        @Override
+        protected List<FileTypesKey> makeKeys() {
+            try {
+                return skCase.findAllFilesWhere(createBaseWhereExpr() + " AND mime_type = '" + mimeType + "'")
+                        .stream().map(f -> new FileTypesKey(f)).collect(Collectors.toList()); //NON-NLS
+            } catch (TskCoreException ex) {
+                logger.log(Level.SEVERE, "Couldn't get search results", ex); //NON-NLS
+            }
+            return Collections.emptyList();
+        }
 
-                @Override
-                public LayoutFileNode visit(LayoutFile lf) {
-                    return new LayoutFileNode(lf);
-                }
+        @Override
+        protected void onAdd() {
+            // No-op
+        }
 
-                @Override
-                public LocalFileNode visit(DerivedFile df) {
-                    return new LocalFileNode(df);
-                }
-
-                @Override
-                public LocalFileNode visit(LocalFile lf) {
-                    return new LocalFileNode(lf);
-                }
-
-                @Override
-                protected AbstractNode defaultVisit(Content di) {
-                    throw new UnsupportedOperationException(NbBundle.getMessage(this.getClass(), "FileTypeChildren.exception.notSupported.msg", di.toString()));
-                }
-            });
+        @Override
+        protected void onRemove() {
+            // No-op
         }
     }
-
 }

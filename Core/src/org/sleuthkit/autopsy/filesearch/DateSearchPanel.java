@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011 Basis Technology Corp.
+ * Copyright 2011-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,20 +21,29 @@ package org.sleuthkit.autopsy.filesearch;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.text.DateFormat;
-import java.text.ParseException;
-import java.util.Date;
 import java.util.List;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JFormattedTextField;
 import javax.swing.JMenuItem;
 import javax.swing.JPopupMenu;
+import com.github.lgooddatepicker.components.DatePicker;
+import com.github.lgooddatepicker.optionalusertools.PickerUtilities;
+import com.github.lgooddatepicker.components.DatePickerSettings;        
+import com.github.lgooddatepicker.optionalusertools.DateChangeListener;
+import com.github.lgooddatepicker.zinternaltools.DateChangeEvent;
+import java.text.ParseException;
+import java.time.Instant;
+import java.util.Date;
 
 /**
  * Subpanel with controls for file data filtering.
  */
+@SuppressWarnings("PMD.SingularField") // UI widgets cause lots of false positives
 class DateSearchPanel extends javax.swing.JPanel {
 
+    private final DatePickerSettings fromDateSettings = new DatePickerSettings();
+    private final DatePickerSettings toDateSettings = new DatePickerSettings();
     DateFormat dateFormat;
     List<String> timeZones;
 
@@ -47,9 +56,11 @@ class DateSearchPanel extends javax.swing.JPanel {
     }
 
     private void customizeComponents() {
-
-        dateFromTextField.setComponentPopupMenu(rightClickMenu);
-        dateToTextField.setComponentPopupMenu(rightClickMenu);
+        fromDateSettings.setFormatForDatesCommonEra(PickerUtilities.createFormatterFromPatternString("MM/dd/yyyy", fromDateSettings.getLocale()));
+        toDateSettings.setFormatForDatesCommonEra(PickerUtilities.createFormatterFromPatternString("MM/dd/yyyy", toDateSettings.getLocale()));
+        fromDateSettings.setAllowKeyboardEditing(false);
+        toDateSettings.setAllowKeyboardEditing(false);
+        
         ActionListener actList = new ActionListener() {
             @Override
             public void actionPerformed(ActionEvent e) {
@@ -74,6 +85,7 @@ class DateSearchPanel extends javax.swing.JPanel {
         copyMenuItem.addActionListener(actList);
         pasteMenuItem.addActionListener(actList);
         selectAllMenuItem.addActionListener(actList);
+                
         this.setComponentsEnabled();
     }
 
@@ -93,12 +105,12 @@ class DateSearchPanel extends javax.swing.JPanel {
         return dateCheckBox;
     }
 
-    JFormattedTextField getDateFromTextField() {
-        return dateFromTextField;
+    String getFromDate() {
+        return fromDatePicker.getText();
     }
 
-    JFormattedTextField getDateToTextField() {
-        return dateToTextField;
+    String getToDate() {
+        return toDatePicker.getText();
     }
 
     JCheckBox getModifiedCheckBox() {
@@ -119,13 +131,11 @@ class DateSearchPanel extends javax.swing.JPanel {
 
     private void setComponentsEnabled() {
         boolean enable = this.dateCheckBox.isSelected();
-        this.dateFromTextField.setEnabled(enable);
-        this.dateFromButtonCalendar.setEnabled(enable);
+        this.fromDatePicker.setEnabled(enable);
         this.jLabel1.setEnabled(enable);
-        this.dateToTextField.setEnabled(enable);
-        this.dateToButtonCalendar.setEnabled(enable);
-        this.jLabel2.setEnabled(enable);
-        this.jLabel3.setEnabled(enable);
+        this.toDatePicker.setEnabled(enable);
+        this.noLimitLabel.setEnabled(enable);
+        this.dateFormatLabel.setEnabled(enable);
         this.jLabel4.setEnabled(enable);
         this.timeZoneComboBox.setEnabled(enable);
         this.modifiedCheckBox.setEnabled(enable);
@@ -148,21 +158,19 @@ class DateSearchPanel extends javax.swing.JPanel {
         copyMenuItem = new javax.swing.JMenuItem();
         pasteMenuItem = new javax.swing.JMenuItem();
         selectAllMenuItem = new javax.swing.JMenuItem();
-        dateToTextField = new JFormattedTextField(this.dateFormat);
         jLabel1 = new javax.swing.JLabel();
         jLabel4 = new javax.swing.JLabel();
         dateCheckBox = new javax.swing.JCheckBox();
         timeZoneComboBox = new JComboBox<>(this.timeZones.toArray(new String[this.timeZones.size()]));
         timeZoneComboBox.setRenderer(new DateSearchFilter.ComboBoxRenderer());
-        jLabel3 = new javax.swing.JLabel();
-        dateFromTextField = new JFormattedTextField(this.dateFormat);
-        jLabel2 = new javax.swing.JLabel();
+        dateFormatLabel = new javax.swing.JLabel();
+        noLimitLabel = new javax.swing.JLabel();
         modifiedCheckBox = new javax.swing.JCheckBox();
         changedCheckBox = new javax.swing.JCheckBox();
         accessedCheckBox = new javax.swing.JCheckBox();
         createdCheckBox = new javax.swing.JCheckBox();
-        dateFromButtonCalendar = new org.jbundle.thin.base.screen.jcalendarbutton.JCalendarButton();
-        dateToButtonCalendar = new org.jbundle.thin.base.screen.jcalendarbutton.JCalendarButton();
+        fromDatePicker = new DatePicker(fromDateSettings);
+        toDatePicker = new DatePicker(toDateSettings);
 
         cutMenuItem.setText(org.openide.util.NbBundle.getMessage(DateSearchPanel.class, "DateSearchPanel.cutMenuItem.text")); // NOI18N
         rightClickMenu.add(cutMenuItem);
@@ -176,13 +184,6 @@ class DateSearchPanel extends javax.swing.JPanel {
         selectAllMenuItem.setText(org.openide.util.NbBundle.getMessage(DateSearchPanel.class, "DateSearchPanel.selectAllMenuItem.text")); // NOI18N
         rightClickMenu.add(selectAllMenuItem);
 
-        dateToTextField.setText(org.openide.util.NbBundle.getMessage(DateSearchPanel.class, "DateSearchPanel.dateToTextField.text")); // NOI18N
-        dateToTextField.addFocusListener(new java.awt.event.FocusAdapter() {
-            public void focusLost(java.awt.event.FocusEvent evt) {
-                dateToTextFieldFocusLost(evt);
-            }
-        });
-
         jLabel1.setText(org.openide.util.NbBundle.getMessage(DateSearchPanel.class, "DateSearchPanel.jLabel1.text")); // NOI18N
 
         jLabel4.setText(org.openide.util.NbBundle.getMessage(DateSearchPanel.class, "DateSearchPanel.jLabel4.text")); // NOI18N
@@ -194,18 +195,11 @@ class DateSearchPanel extends javax.swing.JPanel {
             }
         });
 
-        jLabel3.setFont(new java.awt.Font("Tahoma", 0, 10)); // NOI18N
-        jLabel3.setText(org.openide.util.NbBundle.getMessage(DateSearchPanel.class, "DateSearchPanel.jLabel3.text")); // NOI18N
+        dateFormatLabel.setText(org.openide.util.NbBundle.getMessage(DateSearchPanel.class, "DateSearchPanel.dateFormatLabel.text")); // NOI18N
+        dateFormatLabel.setFont(dateFormatLabel.getFont().deriveFont(dateFormatLabel.getFont().getSize()-1f));
 
-        dateFromTextField.setText(org.openide.util.NbBundle.getMessage(DateSearchPanel.class, "DateSearchPanel.dateFromTextField.text")); // NOI18N
-        dateFromTextField.addFocusListener(new java.awt.event.FocusAdapter() {
-            public void focusLost(java.awt.event.FocusEvent evt) {
-                dateFromTextFieldFocusLost(evt);
-            }
-        });
-
-        jLabel2.setFont(new java.awt.Font("Tahoma", 0, 10)); // NOI18N
-        jLabel2.setText(org.openide.util.NbBundle.getMessage(DateSearchPanel.class, "DateSearchPanel.jLabel2.text")); // NOI18N
+        noLimitLabel.setText(org.openide.util.NbBundle.getMessage(DateSearchPanel.class, "DateSearchPanel.noLimitLabel.text")); // NOI18N
+        noLimitLabel.setFont(noLimitLabel.getFont().deriveFont(noLimitLabel.getFont().getSize()-1f));
 
         modifiedCheckBox.setSelected(true);
         modifiedCheckBox.setText(org.openide.util.NbBundle.getMessage(DateSearchPanel.class, "DateSearchPanel.modifiedCheckBox.text")); // NOI18N
@@ -239,17 +233,27 @@ class DateSearchPanel extends javax.swing.JPanel {
             }
         });
 
-        dateFromButtonCalendar.setText(org.openide.util.NbBundle.getMessage(DateSearchPanel.class, "DateSearchPanel.dateFromButtonCalendar.text")); // NOI18N
-        dateFromButtonCalendar.addPropertyChangeListener(new java.beans.PropertyChangeListener() {
+        fromDatePicker.setOpaque(false);
+        fromDatePicker.addFocusListener(new java.awt.event.FocusAdapter() {
+            public void focusLost(java.awt.event.FocusEvent evt) {
+                fromDatePickerFocusLost(evt);
+            }
+        });
+        fromDatePicker.addPropertyChangeListener(new java.beans.PropertyChangeListener() {
             public void propertyChange(java.beans.PropertyChangeEvent evt) {
-                dateFromPopupChanged(evt);
+                fromDatePickerPropertyChange(evt);
             }
         });
 
-        dateToButtonCalendar.setText(org.openide.util.NbBundle.getMessage(DateSearchPanel.class, "DateSearchPanel.dateToButtonCalendar.text")); // NOI18N
-        dateToButtonCalendar.addPropertyChangeListener(new java.beans.PropertyChangeListener() {
+        toDatePicker.setOpaque(false);
+        toDatePicker.addFocusListener(new java.awt.event.FocusAdapter() {
+            public void focusLost(java.awt.event.FocusEvent evt) {
+                toDatePickerFocusLost(evt);
+            }
+        });
+        toDatePicker.addPropertyChangeListener(new java.beans.PropertyChangeListener() {
             public void propertyChange(java.beans.PropertyChangeEvent evt) {
-                dateToPopupChanged(evt);
+                toDatePickerPropertyChange(evt);
             }
         });
 
@@ -257,33 +261,13 @@ class DateSearchPanel extends javax.swing.JPanel {
         this.setLayout(layout);
         layout.setHorizontalGroup(
             layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-            .addGroup(layout.createSequentialGroup()
-                .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING, false)
-                    .addGroup(layout.createSequentialGroup()
-                        .addComponent(dateCheckBox)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(dateFromTextField, javax.swing.GroupLayout.PREFERRED_SIZE, 92, javax.swing.GroupLayout.PREFERRED_SIZE)
-                        .addGap(0, 0, 0)
-                        .addComponent(dateFromButtonCalendar, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
-                        .addComponent(jLabel1)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
-                        .addComponent(dateToTextField, javax.swing.GroupLayout.PREFERRED_SIZE, 92, javax.swing.GroupLayout.PREFERRED_SIZE)
-                        .addGap(0, 0, 0)
-                        .addComponent(dateToButtonCalendar, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                    .addGroup(javax.swing.GroupLayout.Alignment.TRAILING, layout.createSequentialGroup()
-                        .addContainerGap()
-                        .addComponent(jLabel2)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
-                        .addComponent(jLabel3)))
-                .addContainerGap(26, Short.MAX_VALUE))
             .addGroup(javax.swing.GroupLayout.Alignment.TRAILING, layout.createSequentialGroup()
                 .addGap(0, 0, Short.MAX_VALUE)
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                     .addGroup(layout.createSequentialGroup()
                         .addComponent(jLabel4)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(timeZoneComboBox, javax.swing.GroupLayout.PREFERRED_SIZE, 193, javax.swing.GroupLayout.PREFERRED_SIZE))
+                        .addComponent(timeZoneComboBox, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
                     .addGroup(layout.createSequentialGroup()
                         .addComponent(modifiedCheckBox)
                         .addGap(6, 6, 6)
@@ -293,27 +277,39 @@ class DateSearchPanel extends javax.swing.JPanel {
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addComponent(changedCheckBox)))
                 .addGap(33, 33, 33))
+            .addGroup(layout.createSequentialGroup()
+                .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                    .addGroup(layout.createSequentialGroup()
+                        .addContainerGap()
+                        .addComponent(noLimitLabel)
+                        .addGap(18, 18, 18)
+                        .addComponent(dateFormatLabel))
+                    .addGroup(layout.createSequentialGroup()
+                        .addComponent(dateCheckBox)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(fromDatePicker, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                        .addComponent(jLabel1)
+                        .addGap(10, 10, 10)
+                        .addComponent(toDatePicker, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)))
+                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
         );
         layout.setVerticalGroup(
             layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
             .addGroup(layout.createSequentialGroup()
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING, false)
                     .addGroup(layout.createSequentialGroup()
-                        .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
-                            .addComponent(dateCheckBox)
-                            .addComponent(dateFromTextField, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                        .addComponent(dateCheckBox)
                         .addGap(18, 18, 18))
                     .addGroup(layout.createSequentialGroup()
-                        .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                            .addComponent(dateToButtonCalendar, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                            .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
-                                .addComponent(jLabel1)
-                                .addComponent(dateToTextField, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                            .addComponent(dateFromButtonCalendar, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                        .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                            .addComponent(jLabel1)
+                            .addComponent(fromDatePicker, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                            .addComponent(toDatePicker, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
                         .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
-                            .addComponent(jLabel3)
-                            .addComponent(jLabel2))
+                            .addComponent(dateFormatLabel)
+                            .addComponent(noLimitLabel))
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)))
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                     .addComponent(jLabel4)
@@ -328,44 +324,6 @@ class DateSearchPanel extends javax.swing.JPanel {
                 .addGap(0, 0, 0))
         );
     }// </editor-fold>//GEN-END:initComponents
-
-    private void dateFromTextFieldFocusLost(java.awt.event.FocusEvent evt) {//GEN-FIRST:event_dateFromTextFieldFocusLost
-        // set the "from" calendar button to listen to change in the text field
-        String fromDateString = this.dateFromTextField.getText();
-        if (!fromDateString.equals("")) {
-            try {
-                Date fromDate = dateFormat.parse(fromDateString);
-                dateFromButtonCalendar.setTargetDate(fromDate);
-            } catch (ParseException ex) {
-                // for now, no need to show the error message to the user her
-            }
-        }
-    }//GEN-LAST:event_dateFromTextFieldFocusLost
-
-    private void dateToTextFieldFocusLost(java.awt.event.FocusEvent evt) {//GEN-FIRST:event_dateToTextFieldFocusLost
-        // set the "to" calendar button to listen to change in the text field
-        String toDateString = this.dateToTextField.getText();
-        if (!toDateString.equals("")) {
-            try {
-                Date toDate = dateFormat.parse(toDateString);
-                dateToButtonCalendar.setTargetDate(toDate);
-            } catch (ParseException ex) {
-                // for now, no need to show the error message to the user here
-            }
-        }
-    }//GEN-LAST:event_dateToTextFieldFocusLost
-
-    private void dateFromPopupChanged(java.beans.PropertyChangeEvent evt) {//GEN-FIRST:event_dateFromPopupChanged
-        if (evt.getNewValue() instanceof Date) {
-            setFromDate((Date) evt.getNewValue());
-        }
-    }//GEN-LAST:event_dateFromPopupChanged
-
-    private void dateToPopupChanged(java.beans.PropertyChangeEvent evt) {//GEN-FIRST:event_dateToPopupChanged
-        if (evt.getNewValue() instanceof Date) {
-            setToDate((Date) evt.getNewValue());
-        }
-    }//GEN-LAST:event_dateToPopupChanged
 
     private void dateCheckBoxActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_dateCheckBoxActionPerformed
         this.setComponentsEnabled();
@@ -388,6 +346,44 @@ class DateSearchPanel extends javax.swing.JPanel {
         firePropertyChange(FileSearchPanel.EVENT.CHECKED.toString(), null, null);
     }//GEN-LAST:event_changedCheckBoxActionPerformed
 
+    private void fromDatePickerPropertyChange(java.beans.PropertyChangeEvent evt) {//GEN-FIRST:event_fromDatePickerPropertyChange
+        if (evt.getNewValue() instanceof Date) {
+            setFromDate((Date) evt.getNewValue());
+        }
+    }//GEN-LAST:event_fromDatePickerPropertyChange
+
+    private void toDatePickerPropertyChange(java.beans.PropertyChangeEvent evt) {//GEN-FIRST:event_toDatePickerPropertyChange
+        if (evt.getNewValue() instanceof Date) {
+           setToDate((Date) evt.getNewValue());
+        }
+    }//GEN-LAST:event_toDatePickerPropertyChange
+
+    private void fromDatePickerFocusLost(java.awt.event.FocusEvent evt) {//GEN-FIRST:event_fromDatePickerFocusLost
+        // set the "from" calendar button to listen to change in the text field
+        String fromDateString = this.fromDatePicker.getText();
+        if (!fromDateString.equals("")) {
+            try {
+                Date fromDate = dateFormat.parse(fromDateString);
+                fromDatePicker.setDate(fromDate.toInstant().atZone(dateFormat.getTimeZone().toZoneId()).toLocalDate());
+            } catch (ParseException ex) {
+                // for now, no need to show the error message to the user her
+            }
+        }
+    }//GEN-LAST:event_fromDatePickerFocusLost
+
+    private void toDatePickerFocusLost(java.awt.event.FocusEvent evt) {//GEN-FIRST:event_toDatePickerFocusLost
+        // set the "to" calendar button to listen to change in the text field
+        String toDateString = this.toDatePicker.getText();
+        if (!toDateString.equals("")) {
+            try {
+                Date toDate = dateFormat.parse(toDateString);
+                toDatePicker.setDate(toDate.toInstant().atZone(dateFormat.getTimeZone().toZoneId()).toLocalDate());
+            } catch (ParseException ex) {
+                // for now, no need to show the error message to the user here
+            }
+        }
+    }//GEN-LAST:event_toDatePickerFocusLost
+
     /**
      * Validate and set the datetime field on the screen given a datetime
      * string.
@@ -396,11 +392,18 @@ class DateSearchPanel extends javax.swing.JPanel {
      */
     private void setFromDate(Date date) {
         String dateStringResult = "";
+        Instant ins = null;
         if (date != null) {
             dateStringResult = dateFormat.format(date);
+            ins = date.toInstant();
         }
-        dateFromTextField.setText(dateStringResult);
-        dateFromButtonCalendar.setTargetDate(date);
+        
+        fromDatePicker.setText(dateStringResult);
+        if (ins != null) {
+            fromDatePicker.setDate(ins.atZone(dateFormat.getTimeZone().toZoneId()).toLocalDate());
+        } else {
+            fromDatePicker.setDate(null);
+        }
     }
 
     /**
@@ -410,13 +413,19 @@ class DateSearchPanel extends javax.swing.JPanel {
      */
     private void setToDate(Date date) {
         String dateStringResult = "";
+        Instant ins = null;
         if (date != null) {
             dateStringResult = dateFormat.format(date);
+            ins = date.toInstant();
         }
-        dateToTextField.setText(dateStringResult);
-        dateToButtonCalendar.setTargetDate(date);
+        toDatePicker.setText(dateStringResult);
+        if (ins != null) {
+            toDatePicker.setDate(ins.atZone(dateFormat.getTimeZone().toZoneId()).toLocalDate());
+        } else {
+            toDatePicker.setDate(null);
+        }
     }
-    
+
     boolean isValidSearch() {
         return this.accessedCheckBox.isSelected() ||
                 this.changedCheckBox.isSelected() ||
@@ -430,23 +439,27 @@ class DateSearchPanel extends javax.swing.JPanel {
     private javax.swing.JCheckBox createdCheckBox;
     private javax.swing.JMenuItem cutMenuItem;
     private javax.swing.JCheckBox dateCheckBox;
-    private org.jbundle.thin.base.screen.jcalendarbutton.JCalendarButton dateFromButtonCalendar;
-    private javax.swing.JFormattedTextField dateFromTextField;
-    private org.jbundle.thin.base.screen.jcalendarbutton.JCalendarButton dateToButtonCalendar;
-    private javax.swing.JFormattedTextField dateToTextField;
+    private javax.swing.JLabel dateFormatLabel;
+    private com.github.lgooddatepicker.components.DatePicker fromDatePicker;
     private javax.swing.JLabel jLabel1;
-    private javax.swing.JLabel jLabel2;
-    private javax.swing.JLabel jLabel3;
     private javax.swing.JLabel jLabel4;
     private javax.swing.JCheckBox modifiedCheckBox;
+    private javax.swing.JLabel noLimitLabel;
     private javax.swing.JMenuItem pasteMenuItem;
     private javax.swing.JPopupMenu rightClickMenu;
     private javax.swing.JMenuItem selectAllMenuItem;
     private javax.swing.JComboBox<String> timeZoneComboBox;
+    private com.github.lgooddatepicker.components.DatePicker toDatePicker;
     // End of variables declaration//GEN-END:variables
 
-    void addActionListener(ActionListener l) {
-        dateFromTextField.addActionListener(l);
-        dateToTextField.addActionListener(l);
+    void addDateChangeListener() {
+        DateChangeListener dcl = (DateChangeEvent event) -> {
+            firePropertyChange(FileSearchPanel.EVENT.CHECKED.toString(), null, null);            
+        };
+        
+        fromDatePicker.addDateChangeListener(dcl);
+        toDatePicker.addDateChangeListener(dcl);
     }
+
 }
+

@@ -33,11 +33,16 @@ import org.openide.DialogDisplayer;
 import org.openide.NotifyDescriptor;
 import org.openide.modules.InstalledFileLocator;
 import org.openide.util.NbBundle;
+import org.openide.util.NbBundle.Messages;
 import org.python.util.PythonInterpreter;
+import org.sleuthkit.autopsy.core.RuntimeProperties;
 import org.sleuthkit.autopsy.coreutils.Logger;
+import org.sleuthkit.autopsy.coreutils.MessageNotifyUtil;
 import org.sleuthkit.autopsy.coreutils.PlatformUtil;
 import org.sleuthkit.autopsy.ingest.IngestModuleFactory;
 import org.sleuthkit.autopsy.report.GeneralReportModule;
+import java.io.BufferedReader;
+import java.io.FileReader;
 
 /**
  * Finds and loads Autopsy modules written using the Jython variant of the
@@ -53,7 +58,7 @@ public final class JythonModuleLoader {
      * @return A list of objects that implement the IngestModuleFactory
      *         interface.
      */
-    public static List<IngestModuleFactory> getIngestModuleFactories() {
+    public static synchronized List<IngestModuleFactory> getIngestModuleFactories() {
         return getInterfaceImplementations(new IngestModuleFactoryDefFilter(), IngestModuleFactory.class);
     }
 
@@ -63,15 +68,25 @@ public final class JythonModuleLoader {
      * @return A list of objects that implement the GeneralReportModule
      *         interface.
      */
-    public static List<GeneralReportModule> getGeneralReportModules() {
+    public static synchronized List<GeneralReportModule> getGeneralReportModules() {
         return getInterfaceImplementations(new GeneralReportModuleDefFilter(), GeneralReportModule.class);
     }
-
+    @Messages({"JythonModuleLoader.pythonInterpreterError.title=Python Modules",
+                "JythonModuleLoader.pythonInterpreterError.msg=Failed to load python modules, See log for more details"})
     private static <T> List<T> getInterfaceImplementations(LineFilter filter, Class<T> interfaceClass) {
         List<T> objects = new ArrayList<>();
         Set<File> pythonModuleDirs = new HashSet<>();
-        PythonInterpreter interpreter = new PythonInterpreter();
-
+        PythonInterpreter interpreter = null;
+        // This method has previously thrown unchecked exceptions when it could not load because of non-latin characters.
+        try {
+            interpreter = new PythonInterpreter();
+        } catch (Exception ex) {
+            logger.log(Level.SEVERE, "Failed to load python Intepreter. Cannot load python modules", ex);
+            if(RuntimeProperties.runningWithGUI()){
+                MessageNotifyUtil.Notify.show(Bundle.JythonModuleLoader_pythonInterpreterError_title(),Bundle.JythonModuleLoader_pythonInterpreterError_msg(), MessageNotifyUtil.MessageType.ERROR);
+            }
+            return objects;
+        }
         // add python modules from 'autospy/build/cluster/InternalPythonModules' folder
         // which are copied from 'autopsy/*/release/InternalPythonModules' folders.
         for (File f : InstalledFileLocator.getDefault().locateAll("InternalPythonModules", "org.sleuthkit.autopsy.core", false)) { //NON-NLS
@@ -84,8 +99,7 @@ public final class JythonModuleLoader {
             if (file.isDirectory()) {
                 File[] pythonScripts = file.listFiles(new PythonScriptFileFilter());
                 for (File script : pythonScripts) {
-                    try {
-                        Scanner fileScanner = new Scanner(script);
+                        try (Scanner fileScanner = new Scanner(new BufferedReader(new FileReader(script)))) {
                         while (fileScanner.hasNextLine()) {
                             String line = fileScanner.nextLine();
                             if (line.startsWith("class ") && filter.accept(line)) { //NON-NLS

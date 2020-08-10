@@ -54,6 +54,12 @@ public enum FileTypeUtils {
      * types
      */
     private static final Set<String> supportedMimeTypes = new HashSet<>();
+
+    /**
+     * Mimetypes that we disable because they create too many false positives (
+     * ie files that are not images to show up in Image Gallery)
+     */
+    private static final Set<String> disabledMimeTypes = new HashSet<>();
     /**
      * set of specific mimetypes to support as videos, in addition to any type
      * prefixed by video/
@@ -88,26 +94,30 @@ public enum FileTypeUtils {
         ImageIO.scanForPlugins();
         //add all extension ImageIO claims to support
         imageExtensions.addAll(Stream.of(ImageIO.getReaderFileSuffixes())
+                // remove any empty extension types provided by ImageIO.getReaderFileSuffixes()
+                // This prevents extensions added by SPI implementations from causing errors 
+                // (i.e. 'jai-imageio' utilized with IcePDF)
+                .filter((extension) -> StringUtils.isNotBlank(extension))        
                 .map(String::toLowerCase)
                 .collect(Collectors.toList()));
         //add list of known image extensions
         imageExtensions.addAll(Arrays.asList(
-                "bmp" //Bitmap NON-NLS
-                , "gif" //gif NON-NLS
-                , "jpg", "jpeg", "jpe", "jp2", "jpx" //jpeg variants NON-NLS
-                , "pbm", "pgm", "ppm" // Portable image format variants NON-NLS
-                , "png" //portable network graphic NON-NLS
-                , "tga" //targa NON-NLS
-                , "psd" //photoshop NON-NLS
-                , "tif", "tiff" //tiff variants NON-NLS
-                , "yuv", "ico" //icons NON-NLS
-                , "ai" //illustrator NON-NLS
-                , "svg" //scalable vector graphics NON-NLS
-                , "sn", "ras" //sun raster NON-NLS
-                , "ico" //windows icons NON-NLS
-                , "tga" //targa NON-NLS
-                , "wmf", "emf" // windows meta file NON-NLS
-                , "wmz", "emz" //compressed windows meta file NON-NLS
+                "bmp", //Bitmap NON-NLS
+                "gif", //gif NON-NLS
+                "jpg", "jpeg", "jpe", "jp2", "jpx", //jpeg variants NON-NLS
+                "pbm", "pgm", "ppm",// Portable image format variants NON-NLS
+                "png", //portable network graphic NON-NLS
+                "tga", //targa NON-NLS
+                "psd", //photoshop NON-NLS
+                "tif", "tiff", //tiff variants NON-NLS
+                "yuv", "ico", //icons NON-NLS
+                "ai", //illustrator NON-NLS
+                "svg", //scalable vector graphics NON-NLS
+                "sn", "ras", //sun raster NON-NLS
+                "ico", //windows icons NON-NLS
+                "tga", //targa NON-NLS
+                "wmf", "emf", // windows meta file NON-NLS
+                "wmz", "emz" //compressed windows meta file NON-NLS
         ));
 
         //add list of known video extensions
@@ -131,14 +141,33 @@ public enum FileTypeUtils {
          */
         supportedMimeTypes.addAll(Arrays.asList("application/x-123")); //NON-NLS
         supportedMimeTypes.addAll(Arrays.asList("application/x-wmf")); //NON-NLS
-        supportedMimeTypes.addAll(Arrays.asList("application/x-emf")); //NON-NLS
 
-        //add list of mimetypes ImageIO claims to support
+        /*
+         * We could support application/x-emf, but many files get mis-identified
+         * as it and so supporting it causes many false positive( ie files that
+         * are not images) to show up in Image Gallery.
+         * supportedMimeTypes.addAll(Arrays.asList("application/x-emf"));
+         */
+         //add list of mimetypes ImageIO claims to support
         supportedMimeTypes.addAll(Stream.of(ImageIO.getReaderMIMETypes())
+                // remove any empty mime types provided by ImageIO.getReaderMIMETypes()
+                // This prevents mime types added by SPI implementations from causing errors 
+                // (i.e. 'jai-imageio' utilized with IcePDF)
+                .filter((mimeType) -> StringUtils.isNotBlank(mimeType))
                 .map(String::toLowerCase)
                 .collect(Collectors.toList()));
 
-        supportedMimeTypes.removeIf("application/octet-stream"::equals); //this is rarely usefull NON-NLS
+        /**
+         * Many non image files get misidentified as image/vnd.microsoft.icon
+         * and application/x-emf, and show up in Image Gallery as 'false
+         * positives'.
+         */
+        disabledMimeTypes.addAll(Arrays.asList("application/octet-stream",//this is rarely usefull //NON-NLS 
+                "image/vnd.microsoft.icon",
+                "application/x-emf"));
+
+        supportedMimeTypes.removeAll(disabledMimeTypes);
+
     }
 
     public static Set<String> getAllSupportedMimeTypes() {
@@ -169,19 +198,20 @@ public enum FileTypeUtils {
      *
      * @return true if this file is supported or false if not
      */
-    public static boolean isDrawable(AbstractFile file) throws TskCoreException, FileTypeDetector.FileTypeDetectorInitException {
+    public static boolean isDrawable(AbstractFile file) throws FileTypeDetector.FileTypeDetectorInitException {
         return hasDrawableMIMEType(file);
     }
 
     static boolean isDrawableMimeType(String mimeType) {
         if (StringUtils.isBlank(mimeType)) {
             return false;
-        } else {
-            String mimeTypeLower = mimeType.toLowerCase();
-            return mimeTypeLower.startsWith("image/")
-                    || mimeTypeLower.startsWith("video/")
-                    || supportedMimeTypes.contains(mimeTypeLower);
         }
+        String mimeTypeLower = mimeType.toLowerCase();
+        return (disabledMimeTypes.contains(mimeTypeLower) == false)
+                && (mimeTypeLower.startsWith("image/")
+                || mimeTypeLower.startsWith("video/")
+                || supportedMimeTypes.contains(mimeTypeLower));
+
     }
 
     /**
@@ -197,8 +227,13 @@ public enum FileTypeUtils {
      *         type. False if a non image/video mimetype. empty Optional if a
      *         mimetype could not be detected.
      */
-    static boolean hasDrawableMIMEType(AbstractFile file) throws TskCoreException, FileTypeDetector.FileTypeDetectorInitException {
-        String mimeType = getFileTypeDetector().detect(file).toLowerCase();
+    static boolean hasDrawableMIMEType(AbstractFile file) {
+        String mimeType = file.getMIMEType();
+        if (mimeType == null) {
+            return false;
+        }
+        
+        mimeType = mimeType.toLowerCase();
         return isDrawableMimeType(mimeType) || (mimeType.equals("audio/x-aiff") && "tiff".equalsIgnoreCase(file.getNameExtension()));
     }
 
@@ -212,13 +247,13 @@ public enum FileTypeUtils {
      *         available, a video extension.
      */
     public static boolean hasVideoMIMEType(AbstractFile file) {
-        try {
-            String mimeType = getFileTypeDetector().detect(file).toLowerCase();
-            return mimeType.startsWith("video/") || videoMimeTypes.contains(mimeType);
-        } catch (FileTypeDetector.FileTypeDetectorInitException | TskCoreException ex) {
-            LOGGER.log(Level.SEVERE, "Error determining MIME type of " + getContentPathSafe(file), ex);
+        String mimeType = file.getMIMEType();       
+        if (mimeType == null) {
             return false;
         }
+        
+        mimeType = mimeType.toLowerCase();
+        return mimeType.startsWith("video/") || videoMimeTypes.contains(mimeType);
     }
 
     /**

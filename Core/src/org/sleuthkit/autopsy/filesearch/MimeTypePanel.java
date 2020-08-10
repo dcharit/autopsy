@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011-2016 Basis Technology Corp.
+ * Copyright 2011-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,15 +19,16 @@
 package org.sleuthkit.autopsy.filesearch;
 
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.logging.Level;
 import javax.swing.event.ListSelectionEvent;
-import javax.swing.event.ListSelectionListener;
 import org.sleuthkit.autopsy.coreutils.Logger;
 import org.sleuthkit.autopsy.modules.filetypeid.FileTypeDetector;
 
+/**
+ * Enter MIME types for search.
+ */
+@SuppressWarnings("PMD.SingularField") // UI widgets cause lots of false positives
 public class MimeTypePanel extends javax.swing.JPanel {
 
     private static final Logger logger = Logger.getLogger(MimeTypePanel.class.getName());
@@ -39,40 +40,20 @@ public class MimeTypePanel extends javax.swing.JPanel {
     public MimeTypePanel() {
         initComponents();
         setComponentsEnabled();
-        this.mimeTypeList.addListSelectionListener(new ListSelectionListener() {
-            @Override
-            public void valueChanged(ListSelectionEvent e) {
-                firePropertyChange(FileSearchPanel.EVENT.CHECKED.toString(), null, null);
-            }
+        this.mimeTypeList.addListSelectionListener((ListSelectionEvent e) -> {
+            firePropertyChange(FileSearchPanel.EVENT.CHECKED.toString(), null, null);
         });
     }
 
     private String[] getMimeTypeArray() {
-        Set<String> fileTypesCollated = new HashSet<>();
-        for (String mediaType : FileTypeDetector.getStandardDetectedTypes()) {
-            fileTypesCollated.add(mediaType);
-        }
-
-        FileTypeDetector fileTypeDetector;
+        List<String> mimeTypesList = new ArrayList<>();
         try {
-            fileTypeDetector = new FileTypeDetector();
-            List<String> userDefinedFileTypes = fileTypeDetector.getUserDefinedTypes();
-            fileTypesCollated.addAll(userDefinedFileTypes);
-
+            mimeTypesList.addAll(FileTypeDetector.getDetectedTypes());
         } catch (FileTypeDetector.FileTypeDetectorInitException ex) {
-            logger.log(Level.SEVERE, "Unable to get user defined file types", ex);
+            logger.log(Level.SEVERE, "Unable to get detectable file types", ex);
         }
-
-        List<String> toSort = new ArrayList<>(fileTypesCollated);
-        toSort.sort((String string1, String string2) -> {
-            int result = String.CASE_INSENSITIVE_ORDER.compare(string1, string2);
-            if (result == 0) {
-                result = string1.compareTo(string2);
-            }
-            return result;
-        });
-        String[] mimeTypeArray = new String[toSort.size()];
-        return toSort.toArray(mimeTypeArray);
+        String[] mimeTypeArray = new String[mimeTypesList.size()];
+        return mimeTypesList.toArray(mimeTypeArray);
     }
 
     List<String> getMimeTypesSelected() {
@@ -86,7 +67,7 @@ public class MimeTypePanel extends javax.swing.JPanel {
     void setComponentsEnabled() {
         boolean enabled = this.isSelected();
         this.mimeTypeList.setEnabled(enabled);
-        this.jLabel1.setEnabled(enabled);
+        this.noteLabel.setEnabled(enabled);
     }
 
     /**
@@ -101,10 +82,10 @@ public class MimeTypePanel extends javax.swing.JPanel {
         jScrollPane1 = new javax.swing.JScrollPane();
         mimeTypeList = new javax.swing.JList<>();
         mimeTypeCheckBox = new javax.swing.JCheckBox();
-        jLabel1 = new javax.swing.JLabel();
+        noteLabel = new javax.swing.JLabel();
 
         setMinimumSize(new java.awt.Dimension(150, 150));
-        setPreferredSize(new java.awt.Dimension(100, 100));
+        setPreferredSize(new java.awt.Dimension(150, 150));
 
         mimeTypeList.setModel(new javax.swing.AbstractListModel<String>() {
             String[] strings = getMimeTypeArray();
@@ -121,8 +102,8 @@ public class MimeTypePanel extends javax.swing.JPanel {
             }
         });
 
-        jLabel1.setFont(new java.awt.Font("Tahoma", 0, 10)); // NOI18N
-        org.openide.awt.Mnemonics.setLocalizedText(jLabel1, org.openide.util.NbBundle.getMessage(MimeTypePanel.class, "MimeTypePanel.jLabel1.text")); // NOI18N
+        noteLabel.setFont(noteLabel.getFont().deriveFont(noteLabel.getFont().getSize()-1f));
+        org.openide.awt.Mnemonics.setLocalizedText(noteLabel, org.openide.util.NbBundle.getMessage(MimeTypePanel.class, "MimeTypePanel.noteLabel.text")); // NOI18N
 
         javax.swing.GroupLayout layout = new javax.swing.GroupLayout(this);
         this.setLayout(layout);
@@ -134,9 +115,9 @@ public class MimeTypePanel extends javax.swing.JPanel {
             .addGroup(layout.createSequentialGroup()
                 .addContainerGap()
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                    .addComponent(jScrollPane1, javax.swing.GroupLayout.DEFAULT_SIZE, 298, Short.MAX_VALUE)
+                    .addComponent(jScrollPane1, javax.swing.GroupLayout.PREFERRED_SIZE, 0, Short.MAX_VALUE)
                     .addGroup(layout.createSequentialGroup()
-                        .addComponent(jLabel1, javax.swing.GroupLayout.PREFERRED_SIZE, 246, javax.swing.GroupLayout.PREFERRED_SIZE)
+                        .addComponent(noteLabel)
                         .addGap(0, 0, Short.MAX_VALUE)))
                 .addContainerGap())
         );
@@ -145,10 +126,10 @@ public class MimeTypePanel extends javax.swing.JPanel {
             .addGroup(javax.swing.GroupLayout.Alignment.TRAILING, layout.createSequentialGroup()
                 .addComponent(mimeTypeCheckBox)
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                .addComponent(jScrollPane1, javax.swing.GroupLayout.DEFAULT_SIZE, 106, Short.MAX_VALUE)
-                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                .addComponent(jLabel1)
-                .addContainerGap())
+                .addComponent(jScrollPane1, javax.swing.GroupLayout.PREFERRED_SIZE, 103, javax.swing.GroupLayout.PREFERRED_SIZE)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
+                .addComponent(noteLabel)
+                .addGap(40, 40, 40))
         );
     }// </editor-fold>//GEN-END:initComponents
 
@@ -160,9 +141,9 @@ public class MimeTypePanel extends javax.swing.JPanel {
 
 
     // Variables declaration - do not modify//GEN-BEGIN:variables
-    private javax.swing.JLabel jLabel1;
     private javax.swing.JScrollPane jScrollPane1;
     private javax.swing.JCheckBox mimeTypeCheckBox;
     private javax.swing.JList<String> mimeTypeList;
+    private javax.swing.JLabel noteLabel;
     // End of variables declaration//GEN-END:variables
 }

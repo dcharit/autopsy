@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011-2016 Basis Technology Corp.
+ * Copyright 2011-2017 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,17 +23,40 @@ import org.openide.nodes.FilterNode;
 import org.openide.nodes.Node;
 
 /**
- * A children (child factory) implementation for a TableFilterNode. A
- * TableFilterNode creates at most one layer of child nodes for the node it
- * wraps. It is designed to be used for nodes displayed in Autopsy table views.
+ * A <code>Children</code> implementation for a <code>TableFilterNode</code>. A
+ * <code>TableFilterNode</code> creates at most one layer of child nodes for the
+ * node it wraps. It is designed to be used in the results view to ensure the
+ * individual viewers display only the first layer of child nodes.
  */
 class TableFilterChildren extends FilterNode.Children {
 
     /**
+     * Creates a Children object for a TableFilterNode. A TableFilterNode
+     * creates at most one layer of child nodes for the node it wraps. It is
+     * designed to be used in the results view to ensure the individual viewers
+     * display only the first layer of child nodes.
+     *
+     * @param wrappedNode    The node wrapped by the TableFilterNode.
+     * @param createChildren True if a children (child factory) object should be
+     *                       created for the wrapped node.
+     *
+     * @return A children (child factory) object for a node wrapped by a
+     *         TableFilterNode.
+     */
+    public static Children createInstance(Node wrappedNode, boolean createChildren) {
+
+        if (createChildren) {
+            return new TableFilterChildren(wrappedNode);
+        } else {
+            return Children.LEAF;
+        }
+    }
+
+    /**
      * Constructs a children (child factory) implementation for a
-     * TableFilterNode. A TableFilterNode creates at most one layer of child
-     * nodes for the node it wraps. It is designed to be used for nodes
-     * displayed in Autopsy table views.
+     * <code>TableFilterNode</code>. A <code>TableFilterNode</code> creates at
+     * most one layer of child nodes for the node it wraps. It is designed to be
+     * used for nodes displayed in Autopsy table views.
      *
      * @param wrappedNode The node wrapped by the TableFilterNode.
      */
@@ -65,27 +88,5 @@ class TableFilterChildren extends FilterNode.Children {
     @Override
     protected Node[] createNodes(Node key) {
         return new Node[]{this.copyNode(key)};
-    }
-
-    /**
-     * Creates a children (child factory) object for a node wrapped in a
-     * TableFilterNode. A TableFilterNode creates at most one layer of child
-     * nodes for the node it wraps. It is designed to be used for nodes
-     * displayed in Autopsy table views.
-     *
-     *
-     * @param wrappedNode    The node wrapped by the TableFilterNode.
-     * @param createChildren True if a children (child factory) object should be
-     *                       created for the wrapped node.
-     *
-     * @return A children (child factory) object for a node wrapped by a
-     *         TableFilterNode.
-     */
-    public static Children createInstance(Node wrappedNode, boolean createChildren) {
-        if (createChildren) {
-            return new TableFilterChildren(wrappedNode);
-        } else {
-            return Children.LEAF;
-        }
     }
 }

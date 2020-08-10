@@ -1,15 +1,15 @@
 /*
  * Autopsy Forensic Browser
- * 
- * Copyright 2012-2014 Basis Technology Corp.
+ *
+ * Copyright 2012-2020 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- * 
+ *
  *     http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -23,6 +23,7 @@ import java.beans.PropertyChangeListener;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -38,6 +39,7 @@ import org.openide.nodes.Sheet;
 import org.openide.util.NbBundle;
 import org.openide.util.lookup.Lookups;
 import org.sleuthkit.autopsy.casemodule.Case;
+import org.sleuthkit.autopsy.casemodule.NoCurrentCaseException;
 import org.sleuthkit.autopsy.coreutils.Logger;
 import org.sleuthkit.autopsy.ingest.IngestManager;
 import org.sleuthkit.autopsy.ingest.ModuleDataEvent;
@@ -46,7 +48,6 @@ import org.sleuthkit.datamodel.BlackboardAttribute;
 import org.sleuthkit.datamodel.SleuthkitCase;
 import org.sleuthkit.datamodel.SleuthkitCase.CaseDbQuery;
 import org.sleuthkit.datamodel.TskCoreException;
-import org.sleuthkit.datamodel.TskException;
 
 /**
  * Support for TSK_EMAIL_MSG nodes and displaying emails in the directory tree.
@@ -62,12 +63,59 @@ public class EmailExtracted implements AutopsyVisitableItem {
     private static final String MAIL_ACCOUNT = NbBundle.getMessage(EmailExtracted.class, "EmailExtracted.mailAccount.text");
     private static final String MAIL_FOLDER = NbBundle.getMessage(EmailExtracted.class, "EmailExtracted.mailFolder.text");
     private static final String MAIL_PATH_SEPARATOR = "/";
+    private static final Set<IngestManager.IngestJobEvent> INGEST_JOB_EVENTS_OF_INTEREST = EnumSet.of(IngestManager.IngestJobEvent.COMPLETED, IngestManager.IngestJobEvent.CANCELLED);
+    private static final Set<IngestManager.IngestModuleEvent> INGEST_MODULE_EVENTS_OF_INTEREST = EnumSet.of(IngestManager.IngestModuleEvent.DATA_ADDED);
+
+    /**
+     * Parse the path of the email msg to get the account name and folder in
+     * which the email is contained.
+     *
+     * @param path - the TSK_PATH to the email msg
+     *
+     * @return a map containg the account and folder which the email is stored
+     *         in
+     */
+    public static final Map<String, String> parsePath(String path) {
+        Map<String, String> parsed = new HashMap<>();
+        String[] split = path.split(MAIL_PATH_SEPARATOR);
+        if (split.length < 4) {
+            parsed.put(MAIL_ACCOUNT, NbBundle.getMessage(EmailExtracted.class, "EmailExtracted.defaultAcct.text"));
+            parsed.put(MAIL_FOLDER, NbBundle.getMessage(EmailExtracted.class, "EmailExtracted.defaultFolder.text"));
+            return parsed;
+        }
+        parsed.put(MAIL_ACCOUNT, split[2]);
+        parsed.put(MAIL_FOLDER, split[3]);
+        return parsed;
+    }
     private SleuthkitCase skCase;
     private final EmailResults emailResults;
+    private final long filteringDSObjId;    // 0 if not filtering/grouping by data source
 
+    /**
+     * Constructor
+     *
+     * @param skCase Case DB
+     */
     public EmailExtracted(SleuthkitCase skCase) {
+        this(skCase, 0);
+    }
+
+    /**
+     * Constructor
+     *
+     * @param skCase Case DB
+     * @param objId  Object id of the data source
+     *
+     */
+    public EmailExtracted(SleuthkitCase skCase, long objId) {
         this.skCase = skCase;
+        this.filteringDSObjId = objId;
         emailResults = new EmailResults();
+    }
+
+    @Override
+    public <T> T accept(AutopsyItemVisitor<T> visitor) {
+        return visitor.visit(this);
     }
 
     private final class EmailResults extends Observable {
@@ -113,6 +161,9 @@ public class EmailExtracted implements AutopsyVisitableItem {
                     + "attribute_type_id=" + pathAttrId //NON-NLS
                     + " AND blackboard_attributes.artifact_id=blackboard_artifacts.artifact_id" //NON-NLS
                     + " AND blackboard_artifacts.artifact_type_id=" + artId; //NON-NLS
+            if (filteringDSObjId > 0) {
+                query += "  AND blackboard_artifacts.data_source_obj_id = " + filteringDSObjId;
+            }
 
             try (CaseDbQuery dbQuery = skCase.executeQuery(query)) {
                 ResultSet resultSet = dbQuery.getResultSet();
@@ -143,24 +194,6 @@ public class EmailExtracted implements AutopsyVisitableItem {
             setChanged();
             notifyObservers();
         }
-
-        private Map<String, String> parsePath(String path) {
-            Map<String, String> parsed = new HashMap<>();
-            String[] split = path.split(MAIL_PATH_SEPARATOR);
-            if (split.length < 4) {
-                parsed.put(MAIL_ACCOUNT, NbBundle.getMessage(EmailExtracted.class, "EmailExtracted.defaultAcct.text"));
-                parsed.put(MAIL_FOLDER, NbBundle.getMessage(EmailExtracted.class, "EmailExtracted.defaultFolder.text"));
-                return parsed;
-            }
-            parsed.put(MAIL_ACCOUNT, split[2]);
-            parsed.put(MAIL_FOLDER, split[3]);
-            return parsed;
-        }
-    }
-
-    @Override
-    public <T> T accept(AutopsyItemVisitor<T> v) {
-        return v.visit(this);
     }
 
     /**
@@ -183,25 +216,25 @@ public class EmailExtracted implements AutopsyVisitableItem {
         }
 
         @Override
-        public <T> T accept(DisplayableItemNodeVisitor<T> v) {
-            return v.visit(this);
+        public <T> T accept(DisplayableItemNodeVisitor<T> visitor) {
+            return visitor.visit(this);
         }
 
         @Override
         protected Sheet createSheet() {
-            Sheet s = super.createSheet();
-            Sheet.Set ss = s.get(Sheet.PROPERTIES);
-            if (ss == null) {
-                ss = Sheet.createPropertiesSet();
-                s.put(ss);
+            Sheet sheet = super.createSheet();
+            Sheet.Set sheetSet = sheet.get(Sheet.PROPERTIES);
+            if (sheetSet == null) {
+                sheetSet = Sheet.createPropertiesSet();
+                sheet.put(sheetSet);
             }
 
-            ss.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "EmailExtracted.createSheet.name.name"),
+            sheetSet.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "EmailExtracted.createSheet.name.name"),
                     NbBundle.getMessage(this.getClass(), "EmailExtracted.createSheet.name.displayName"),
                     NbBundle.getMessage(this.getClass(), "EmailExtracted.createSheet.name.desc"),
                     getName()));
 
-            return s;
+            return sheet;
         }
 
         @Override
@@ -231,7 +264,7 @@ public class EmailExtracted implements AutopsyVisitableItem {
                      * that is already closed.
                      */
                     try {
-                        Case.getCurrentCase();
+                        Case.getCurrentCaseThrows();
                         /**
                          * Even with the check above, it is still possible that
                          * the case will be closed in a different thread before
@@ -242,7 +275,7 @@ public class EmailExtracted implements AutopsyVisitableItem {
                         if (null != eventData && eventData.getBlackboardArtifactType().getTypeID() == BlackboardArtifact.ARTIFACT_TYPE.TSK_EMAIL_MSG.getTypeID()) {
                             emailResults.update();
                         }
-                    } catch (IllegalStateException notUsed) {
+                    } catch (NoCurrentCaseException notUsed) {
                         /**
                          * Case is closed, do nothing.
                          */
@@ -256,9 +289,9 @@ public class EmailExtracted implements AutopsyVisitableItem {
                      * that is already closed.
                      */
                     try {
-                        Case.getCurrentCase();
+                        Case.getCurrentCaseThrows();
                         emailResults.update();
-                    } catch (IllegalStateException notUsed) {
+                    } catch (NoCurrentCaseException notUsed) {
                         /**
                          * Case is closed, do nothing.
                          */
@@ -275,9 +308,9 @@ public class EmailExtracted implements AutopsyVisitableItem {
 
         @Override
         protected void addNotify() {
-            IngestManager.getInstance().addIngestJobEventListener(pcl);
-            IngestManager.getInstance().addIngestModuleEventListener(pcl);
-            Case.addPropertyChangeListener(pcl);
+            IngestManager.getInstance().addIngestJobEventListener(INGEST_JOB_EVENTS_OF_INTEREST, pcl);
+            IngestManager.getInstance().addIngestModuleEventListener(INGEST_MODULE_EVENTS_OF_INTEREST, pcl);
+            Case.addEventTypeSubscriber(EnumSet.of(Case.Events.CURRENT_CASE), pcl);
             emailResults.update();
             emailResults.addObserver(this);
         }
@@ -286,7 +319,7 @@ public class EmailExtracted implements AutopsyVisitableItem {
         protected void removeNotify() {
             IngestManager.getInstance().removeIngestJobEventListener(pcl);
             IngestManager.getInstance().removeIngestModuleEventListener(pcl);
-            Case.removePropertyChangeListener(pcl);
+            Case.removeEventTypeSubscriber(EnumSet.of(Case.Events.CURRENT_CASE), pcl);
             emailResults.deleteObserver(this);
         }
 
@@ -329,19 +362,19 @@ public class EmailExtracted implements AutopsyVisitableItem {
 
         @Override
         protected Sheet createSheet() {
-            Sheet s = super.createSheet();
-            Sheet.Set ss = s.get(Sheet.PROPERTIES);
-            if (ss == null) {
-                ss = Sheet.createPropertiesSet();
-                s.put(ss);
+            Sheet sheet = super.createSheet();
+            Sheet.Set sheetSet = sheet.get(Sheet.PROPERTIES);
+            if (sheetSet == null) {
+                sheetSet = Sheet.createPropertiesSet();
+                sheet.put(sheetSet);
             }
 
-            ss.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "EmailExtracted.createSheet.name.name"),
+            sheetSet.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "EmailExtracted.createSheet.name.name"),
                     NbBundle.getMessage(this.getClass(), "EmailExtracted.createSheet.name.displayName"),
                     NbBundle.getMessage(this.getClass(), "EmailExtracted.createSheet.name.desc"),
                     getName()));
 
-            return s;
+            return sheet;
         }
 
         @Override
@@ -350,8 +383,8 @@ public class EmailExtracted implements AutopsyVisitableItem {
         }
 
         @Override
-        public <T> T accept(DisplayableItemNodeVisitor<T> v) {
-            return v.visit(this);
+        public <T> T accept(DisplayableItemNodeVisitor<T> visitor) {
+            return visitor.visit(this);
         }
 
         @Override
@@ -420,29 +453,29 @@ public class EmailExtracted implements AutopsyVisitableItem {
 
         @Override
         public boolean isLeafTypeNode() {
-            return true;
+            return false;
         }
 
         @Override
         protected Sheet createSheet() {
-            Sheet s = super.createSheet();
-            Sheet.Set ss = s.get(Sheet.PROPERTIES);
-            if (ss == null) {
-                ss = Sheet.createPropertiesSet();
-                s.put(ss);
+            Sheet sheet = super.createSheet();
+            Sheet.Set sheetSet = sheet.get(Sheet.PROPERTIES);
+            if (sheetSet == null) {
+                sheetSet = Sheet.createPropertiesSet();
+                sheet.put(sheetSet);
             }
 
-            ss.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "EmailExtracted.createSheet.name.name"),
+            sheetSet.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "EmailExtracted.createSheet.name.name"),
                     NbBundle.getMessage(this.getClass(), "EmailExtracted.createSheet.name.displayName"),
                     NbBundle.getMessage(this.getClass(), "EmailExtracted.createSheet.name.desc"),
                     getName()));
 
-            return s;
+            return sheet;
         }
 
         @Override
-        public <T> T accept(DisplayableItemNodeVisitor<T> v) {
-            return v.visit(this);
+        public <T> T accept(DisplayableItemNodeVisitor<T> visitor) {
+            return visitor.visit(this);
         }
 
         @Override
@@ -459,41 +492,56 @@ public class EmailExtracted implements AutopsyVisitableItem {
     /**
      * Node representing mail folder content (mail messages)
      */
-    private class MessageFactory extends ChildFactory<Long> implements Observer {
+    private class MessageFactory extends BaseChildFactory<BlackboardArtifact> implements Observer {
 
         private final String accountName;
         private final String folderName;
 
         private MessageFactory(String accountName, String folderName) {
-            super();
+            super(accountName + "_" + folderName);
             this.accountName = accountName;
             this.folderName = folderName;
             emailResults.addObserver(this);
         }
 
         @Override
-        protected boolean createKeys(List<Long> list) {
-            list.addAll(emailResults.getArtifactIds(accountName, folderName));
-            return true;
-        }
-
-        @Override
-        protected Node createNodeForKey(Long artifactId) {
-            if (skCase == null) {
-                return null;
-            }
-            try {
-                BlackboardArtifact artifact = skCase.getBlackboardArtifact(artifactId);
-                return new BlackboardArtifactNode(artifact);
-            } catch (TskException ex) {
-                logger.log(Level.WARNING, "Error creating mail messages nodes", ex); //NON-NLS
-            }
-            return null;
+        protected Node createNodeForKey(BlackboardArtifact art) {
+            return new BlackboardArtifactNode(art);
         }
 
         @Override
         public void update(Observable o, Object arg) {
             refresh(true);
+        }
+
+        @Override
+        protected List<BlackboardArtifact> makeKeys() {
+            List<BlackboardArtifact> keys = new ArrayList<>();
+
+            if (skCase != null) {
+                emailResults.getArtifactIds(accountName, folderName).forEach((id) -> {
+                    try {
+                        BlackboardArtifact art = skCase.getBlackboardArtifact(id);
+                        //Cache attributes while we are off the EDT.
+                        //See JIRA-5969
+                        art.getAttributes();
+                        keys.add(art);
+                    } catch (TskCoreException ex) {
+                        logger.log(Level.WARNING, "Error getting mail messages keys", ex); //NON-NLS
+                    }
+                });
+            }
+            return keys;
+        }
+
+        @Override
+        protected void onAdd() {
+            // No-op
+        }
+
+        @Override
+        protected void onRemove() {
+            // No-op
         }
     }
 }

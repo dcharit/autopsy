@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011-2014 Basis Technology Corp.
+ * Copyright 2011-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,25 +18,46 @@
  */
 package org.sleuthkit.autopsy.core;
 
+import com.sun.jna.platform.win32.Kernel32;
+import java.awt.Cursor;
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import javafx.application.Platform;
 import javafx.embed.swing.JFXPanel;
+import net.sf.sevenzipjbinding.SevenZip;
+import net.sf.sevenzipjbinding.SevenZipNativeInitializationException;
+import org.apache.commons.io.FileUtils;
+import org.apache.commons.lang3.StringUtils;
+import org.openide.modules.InstalledFileLocator;
 import org.openide.modules.ModuleInstall;
 import org.openide.util.NbBundle;
 import org.openide.windows.WindowManager;
+import org.sleuthkit.autopsy.actions.IngestRunningCheck;
+import org.sleuthkit.autopsy.casemodule.Case;
+import static org.sleuthkit.autopsy.core.UserPreferences.SETTINGS_PROPERTIES;
 import org.sleuthkit.autopsy.coreutils.Logger;
 import org.sleuthkit.autopsy.coreutils.MessageNotifyUtil;
+import org.sleuthkit.autopsy.coreutils.ModuleSettings;
 import org.sleuthkit.autopsy.coreutils.PlatformUtil;
+import org.sleuthkit.autopsy.modules.filetypeid.FileTypeDetector;
+import org.sleuthkit.autopsy.python.JythonModuleLoader;
 
 /**
  * Wrapper over Installers in packages in Core module. This is the main
  * registered installer in the MANIFEST.MF.
  */
 public class Installer extends ModuleInstall {
+
+    private static final long serialVersionUID = 1L;
 
     private final List<ModuleInstall> packageInstallers;
     private static final Logger logger = Logger.getLogger(Installer.class.getName());
@@ -61,6 +82,8 @@ public class Installer extends ModuleInstall {
          */
         if (PlatformUtil.isWindowsOS()) {
             try {
+                addGstreamerPathsToEnv();
+
                 //Note: if shipping with a different CRT version, this will only print a warning
                 //and try to use linker mechanism to find the correct versions of libs.
                 //We should update this if we officially switch to a new version of CRT/compiler
@@ -142,7 +165,9 @@ public class Installer extends ModuleInstall {
                 logger.log(Level.SEVERE, "Error loading VHDI library, ", e); //NON-NLS
             }
 
-            /* PostgreSQL */
+            /*
+             * PostgreSQL
+             */
             try {
                 System.loadLibrary("msvcr120"); //NON-NLS
                 logger.log(Level.INFO, "MSVCR 120 library loaded"); //NON-NLS
@@ -177,7 +202,7 @@ public class Installer extends ModuleInstall {
             } catch (UnsatisfiedLinkError e) {
                 logger.log(Level.SEVERE, "Error loading libintl-8 library, ", e); //NON-NLS
             }
-            
+
             try {
                 System.loadLibrary("libpq"); //NON-NLS
                 logger.log(Level.INFO, "LIBPQ library loaded"); //NON-NLS
@@ -190,11 +215,51 @@ public class Installer extends ModuleInstall {
     public Installer() {
         logger.log(Level.INFO, "core installer created"); //NON-NLS
         javaFxInit = false;
+
+        // Prevent the Autopsy UI from shrinking on high DPI displays
+        System.setProperty("sun.java2d.dpiaware", "false");
+        System.setProperty("prism.allowhidpi", "false");
+
+        // Update existing configuration in case of unsupported settings
+        updateConfig();
+
         packageInstallers = new ArrayList<>();
         packageInstallers.add(org.sleuthkit.autopsy.coreutils.Installer.getDefault());
         packageInstallers.add(org.sleuthkit.autopsy.corecomponents.Installer.getDefault());
         packageInstallers.add(org.sleuthkit.autopsy.datamodel.Installer.getDefault());
         packageInstallers.add(org.sleuthkit.autopsy.ingest.Installer.getDefault());
+        packageInstallers.add(org.sleuthkit.autopsy.centralrepository.eventlisteners.Installer.getDefault());
+        packageInstallers.add(org.sleuthkit.autopsy.healthmonitor.Installer.getDefault());
+
+        /**
+         * This is a temporary workaround for the following bug in Tika that
+         * results in a null pointer exception when used from the Image Gallery.
+         * The current hypothesis is that the Image Gallery is cancelling the
+         * thumbnail task that Tika initialization is happening on. Once the
+         * Tika issue has been fixed we should no longer need this workaround.
+         *
+         * https://issues.apache.org/jira/browse/TIKA-2896
+         */
+        try {
+            FileTypeDetector fileTypeDetector = new FileTypeDetector();
+        } catch (FileTypeDetector.FileTypeDetectorInitException ex) {
+            logger.log(Level.SEVERE, "Failed to load file type detector.", ex);
+        }
+    }
+
+    /**
+     * If the mode in the configuration file is 'REVIEW' (2, now invalid), this
+     * method will set it to 'STANDALONE' (0) and disable auto ingest.
+     */
+    private void updateConfig() {
+        String mode = ModuleSettings.getConfigSetting(SETTINGS_PROPERTIES, "AutopsyMode");
+        if (mode != null) {
+            int ordinal = Integer.parseInt(mode);
+            if (ordinal > 1) {
+                UserPreferences.setMode(UserPreferences.SelectedMode.STANDALONE);
+                ModuleSettings.setConfigSetting(UserPreferences.SETTINGS_PROPERTIES, "JoinAutoModeCluster", Boolean.toString(false));
+            }
+        }
     }
 
     /**
@@ -212,7 +277,7 @@ public class Installer extends ModuleInstall {
         System.setProperty("javafx.macosx.embedded", "true");
         try {
             // Creating a JFXPanel initializes JavaFX
-            new JFXPanel();
+            JFXPanel panel = new JFXPanel();
             Platform.setImplicitExit(false);
             javaFxInit = true;
         } catch (UnsatisfiedLinkError | NoClassDefFoundError | Exception e) {
@@ -231,16 +296,94 @@ public class Installer extends ModuleInstall {
         }
     }
 
+    /**
+     * Add the Gstreamer bin and lib paths to the PATH environment variable so
+     * that the correct plugins and libraries are found when Gstreamer is
+     * initialized later.
+     */
+    private static void addGstreamerPathsToEnv() {
+        if (System.getProperty("jna.nosys") == null) {
+            System.setProperty("jna.nosys", "true");
+        }
+
+        Path gstreamerPath = InstalledFileLocator.getDefault().locate("gstreamer", Installer.class.getPackage().getName(), false).toPath();
+
+        if (gstreamerPath == null) {
+            logger.log(Level.SEVERE, "Failed to find GStreamer.");
+        } else {
+            String arch = "x86_64";
+            if (!PlatformUtil.is64BitJVM()) {
+                arch = "x86";
+            }
+
+            Path gstreamerBasePath = Paths.get(gstreamerPath.toString(), "1.0", arch);
+            Path gstreamerBinPath = Paths.get(gstreamerBasePath.toString(), "bin");
+            Path gstreamerLibPath = Paths.get(gstreamerBasePath.toString(), "lib", "gstreamer-1.0");
+
+            // Update the PATH environment variable to contain the GStreamer
+            // lib and bin paths.
+            Kernel32 k32 = Kernel32.INSTANCE;
+            String path = System.getenv("PATH");
+            if (StringUtils.isBlank(path)) {
+                k32.SetEnvironmentVariable("PATH", gstreamerLibPath.toString());
+            } else {
+                /*
+                 * Note that we *prepend* the paths so that the Gstreamer
+                 * binaries associated with the current release are found rather
+                 * than binaries associated with an earlier version of Autopsy.
+                 */
+                k32.SetEnvironmentVariable("PATH", gstreamerBinPath.toString() + File.pathSeparator + gstreamerLibPath.toString() + path);
+            }
+        }
+    }
+
+    /**
+     * Make a folder in the config directory for object detection classifiers if
+     * one does not exist.
+     */
+    private static void ensureClassifierFolderExists() {
+        File objectDetectionClassifierDir = new File(PlatformUtil.getObjectDetectionClassifierPath());
+        objectDetectionClassifierDir.mkdir();
+    }
+
+    /**
+     * Make a folder in the config directory for Python Modules if one does not
+     * exist.
+     */
     private static void ensurePythonModulesFolderExists() {
         File pythonModulesDir = new File(PlatformUtil.getUserPythonModulesPath());
         pythonModulesDir.mkdir();
+    }
+
+    /**
+     * Make a folder in the config directory for Ocr Language Packs if one does
+     * not exist.
+     */
+    private static void ensureOcrLanguagePacksFolderExists() {
+        File ocrLanguagePacksDir = new File(PlatformUtil.getOcrLanguagePacksPath());
+        boolean createDirectory = ocrLanguagePacksDir.mkdir();
+
+        //If the directory did not exist, copy the tessdata folder over so we 
+        //support english.
+        if (createDirectory) {
+            File tessdataDir = InstalledFileLocator.getDefault().locate(
+                    "Tesseract-OCR/tessdata", Installer.class.getPackage().getName(), false);
+            try {
+                FileUtils.copyDirectory(tessdataDir, ocrLanguagePacksDir);
+            } catch (IOException ex) {
+                logger.log(Level.SEVERE, "Copying over default language packs for Tesseract failed.", ex);
+            }
+        }
     }
 
     @Override
     public void restored() {
         super.restored();
         ensurePythonModulesFolderExists();
+        ensureClassifierFolderExists();
+        ensureOcrLanguagePacksFolderExists();
         initJavaFx();
+        initializeSevenZip();
         for (ModuleInstall mi : packageInstallers) {
             try {
                 mi.restored();
@@ -250,7 +393,40 @@ public class Installer extends ModuleInstall {
                 logger.log(Level.WARNING, msg, e);
             }
         }
-        logger.log(Level.INFO, "Autopsy Core restore completed"); //NON-NLS        
+        logger.log(Level.INFO, "Autopsy Core restore completed"); //NON-NLS    
+        preloadJython();
+    }
+
+    /**
+     * Initializes 7zip-java bindings. We are performing initialization once
+     * because we encountered issues related to file locking when initialization
+     * was performed closer to where the bindings are used. See JIRA-6528.
+     */
+    private void initializeSevenZip() {
+        try {
+            SevenZip.initSevenZipFromPlatformJAR();
+            logger.log(Level.INFO, "7zip-java bindings loaded"); //NON-NLS
+        } catch (SevenZipNativeInitializationException e) {
+            logger.log(Level.SEVERE, "Error loading 7zip-java bindings", e); //NON-NLS
+        }
+    }
+
+    /**
+     * Runs an initial load of the Jython modules to speed up subsequent loads.
+     */
+    private void preloadJython() {
+        Runnable loader = () -> {
+            try {
+                JythonModuleLoader.getIngestModuleFactories();
+                JythonModuleLoader.getGeneralReportModules();
+            } catch (Exception ex) {
+                // This is a firewall exception to ensure that any possible exception caused
+                // by this initial load of the Jython modules are caught and logged.
+                logger.log(Level.SEVERE, "There was an error while doing an initial load of python plugins.", ex);
+            }
+
+        };
+        new Thread(loader).start();
     }
 
     @Override
@@ -262,7 +438,7 @@ public class Installer extends ModuleInstall {
             logger.log(Level.INFO, "{0} validate()", mi.getClass().getName()); //NON-NLS
             try {
                 mi.validate();
-            } catch (Exception e) {
+            } catch (IllegalStateException e) {
                 logger.log(Level.WARNING, "", e);
             }
         }
@@ -281,6 +457,40 @@ public class Installer extends ModuleInstall {
             } catch (Exception e) {
                 logger.log(Level.WARNING, "", e);
             }
+        }
+    }
+
+    @NbBundle.Messages({
+        "Installer.closing.confirmationDialog.title=Ingest is Running",
+        "Installer.closing.confirmationDialog.message=Ingest is running, are you sure you want to exit?",
+        "# {0} - exception message", "Installer.closing.messageBox.caseCloseExceptionMessage=Error closing case: {0}"
+    })
+    @Override
+    public boolean closing() {
+        if (IngestRunningCheck.checkAndConfirmProceed(Bundle.Installer_closing_confirmationDialog_title(), Bundle.Installer_closing_confirmationDialog_message())) {
+            WindowManager.getDefault().getMainWindow().setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+            FutureTask<Void> future = new FutureTask<>(new Callable<Void>() {
+                @Override
+                public Void call() throws Exception {
+                    Case.closeCurrentCase();
+                    return null;
+                }
+            });
+            Thread thread = new Thread(future);
+            thread.start();
+            try {
+                future.get();
+            } catch (InterruptedException ex) {
+                logger.log(Level.SEVERE, "Unexpected interrupt closing the current case", ex);
+            } catch (ExecutionException ex) {
+                logger.log(Level.SEVERE, "Error closing the current case", ex);
+                MessageNotifyUtil.Message.error(Bundle.Installer_closing_messageBox_caseCloseExceptionMessage(ex.getMessage()));
+            } finally {
+                WindowManager.getDefault().getMainWindow().setCursor(Cursor.getPredefinedCursor(Cursor.DEFAULT_CURSOR));
+            }
+            return true;
+        } else {
+            return false;
         }
     }
 

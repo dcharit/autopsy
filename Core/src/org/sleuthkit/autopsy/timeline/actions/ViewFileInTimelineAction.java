@@ -19,11 +19,16 @@
 package org.sleuthkit.autopsy.timeline.actions;
 
 import java.awt.event.ActionEvent;
+import java.util.logging.Level;
 import javax.swing.AbstractAction;
 import org.openide.util.NbBundle;
 import org.openide.util.actions.SystemAction;
+import org.sleuthkit.autopsy.coreutils.Logger;
+import org.sleuthkit.autopsy.coreutils.MessageNotifyUtil;
+import org.sleuthkit.autopsy.coreutils.ModuleSettings;
 import org.sleuthkit.autopsy.timeline.OpenTimelineAction;
 import org.sleuthkit.datamodel.AbstractFile;
+import org.sleuthkit.datamodel.TskCoreException;
 import org.sleuthkit.datamodel.TskData;
 
 /**
@@ -34,15 +39,25 @@ public final class ViewFileInTimelineAction extends AbstractAction {
 
     private static final long serialVersionUID = 1L;
 
+    private static final Logger logger = Logger.getLogger(ViewFileInTimelineAction.class.getName());
+
     private final AbstractFile file;
 
     private ViewFileInTimelineAction(AbstractFile file, String displayName) {
         super(displayName);
         this.file = file;
-        
-        if(file.getType().equals(TskData.TSK_DB_FILES_TYPE_ENUM.SLACK) 
-                || file.getType().equals(TskData.TSK_DB_FILES_TYPE_ENUM.UNALLOC_BLOCKS)){
+
+        if (file.getType().equals(TskData.TSK_DB_FILES_TYPE_ENUM.SLACK)
+                || file.getType().equals(TskData.TSK_DB_FILES_TYPE_ENUM.UNALLOC_BLOCKS)
+                || (file.getCrtime() <= 0
+                && file.getCtime() <= 0
+                && file.getMtime() <= 0
+                && file.getAtime() <= 0)) {
             this.setEnabled(false);
+        }
+        // If timeline functionality is not available this action is disabled.
+        if ("false".equals(ModuleSettings.getConfigSetting("timeline", "enable_timeline"))) {
+            setEnabled(false);
         }
     }
 
@@ -58,6 +73,11 @@ public final class ViewFileInTimelineAction extends AbstractAction {
 
     @Override
     public void actionPerformed(ActionEvent e) {
-        SystemAction.get(OpenTimelineAction.class).showFileInTimeline(file);
+        try {
+            SystemAction.get(OpenTimelineAction.class).showFileInTimeline(file);
+        } catch (TskCoreException ex) {
+            MessageNotifyUtil.Message.error("Error opening Timeline");
+            logger.log(Level.SEVERE, "Error showing timeline.", ex);
+        }
     }
 }

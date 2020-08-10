@@ -1,15 +1,15 @@
 /*
  * Autopsy Forensic Browser
- * 
+ *
  * Copyright 2012-2014 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- * 
+ *
  *     http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -33,10 +33,9 @@ import org.openide.util.NbBundle;
 import org.sleuthkit.autopsy.coreutils.Logger;
 import org.sleuthkit.autopsy.coreutils.PlatformUtil;
 import org.sleuthkit.autopsy.coreutils.XMLUtil;
+import org.sleuthkit.autopsy.ingest.DataSourceIngestModuleProgress;
 import org.sleuthkit.autopsy.ingest.IngestJobContext;
 import org.sleuthkit.autopsy.ingest.IngestModule.IngestModuleException;
-import org.sleuthkit.autopsy.ingest.IngestServices;
-import org.sleuthkit.autopsy.ingest.ModuleDataEvent;
 import org.sleuthkit.datamodel.AbstractFile;
 import org.sleuthkit.datamodel.BlackboardArtifact;
 import org.sleuthkit.datamodel.BlackboardArtifact.ARTIFACT_TYPE;
@@ -62,7 +61,8 @@ import org.xml.sax.SAXException;
     "cannotBuildXmlParser=Unable to build XML parser: ",
     "cannotLoadSEUQA=Unable to load Search Engine URL Query Analyzer settings file, SEUQAMappings.xml: ",
     "cannotParseXml=Unable to parse XML file: ",
-    "# {0} - file name", "SearchEngineURLQueryAnalyzer.init.exception.msg=Unable to find {0}."
+    "# {0} - file name", "SearchEngineURLQueryAnalyzer.init.exception.msg=Unable to find {0}.",
+    "Progress_Message_Find_Search_Query=Find Search Queries"
 })
 class SearchEngineURLQueryAnalyzer extends Extract {
 
@@ -237,8 +237,19 @@ class SearchEngineURLQueryAnalyzer extends Extract {
         try { //try to decode the url
             String decoded = URLDecoder.decode(x, "UTF-8"); //NON-NLS
             return decoded;
-        } catch (UnsupportedEncodingException uee) { //if it fails, return the encoded string
-            logger.log(Level.FINE, "Error during URL decoding ", uee); //NON-NLS
+        } catch (UnsupportedEncodingException exception) { //if it fails, return the encoded string
+            logger.log(Level.FINE, "Error during URL decoding, returning undecoded value:"
+                    + "\n\tURL: " + url
+                    + "\n\tUndecoded value: " + x
+                    + "\n\tEngine name: " + eng.getEngineName()
+                    + "\n\tEngine domain: " + eng.getDomainSubstring(), exception); //NON-NLS
+            return x;
+        } catch (IllegalArgumentException exception) { //if it fails, return the encoded string
+            logger.log(Level.SEVERE, "Illegal argument passed to URL decoding, returning undecoded value:"
+                    + "\n\tURL: " + url
+                    + "\n\tUndecoded value: " + x
+                    + "\n\tEngine name: " + eng.getEngineName()
+                    + "\n\tEngine domain: " + eng.getDomainSubstring(), exception); //NON-NLS)
             return x;
         }
     }
@@ -355,7 +366,7 @@ class SearchEngineURLQueryAnalyzer extends Extract {
                     bbattributes.add(new BlackboardAttribute(ATTRIBUTE_TYPE.TSK_DATETIME_ACCESSED,
                             NbBundle.getMessage(this.getClass(),
                                     "SearchEngineURLQueryAnalyzer.parentModuleName"), last_accessed));
-                    this.addArtifact(ARTIFACT_TYPE.TSK_WEB_SEARCH_QUERY, file, bbattributes);
+                    postArtifact(createArtifactWithAttributes(ARTIFACT_TYPE.TSK_WEB_SEARCH_QUERY, file, bbattributes));
                     se.increment();
                     ++totalQueries;
                 }
@@ -366,9 +377,6 @@ class SearchEngineURLQueryAnalyzer extends Extract {
             if (context.dataSourceIngestIsCancelled()) {
                 logger.info("Operation terminated by user."); //NON-NLS
             }
-            IngestServices.getInstance().fireModuleDataEvent(new ModuleDataEvent(
-                    NbBundle.getMessage(this.getClass(), "SearchEngineURLQueryAnalyzer.parentModuleName.noSpace"),
-                    BlackboardArtifact.ARTIFACT_TYPE.TSK_WEB_SEARCH_QUERY));
             logger.log(Level.INFO, "Extracted {0} queries from the blackboard", totalQueries); //NON-NLS
         }
     }
@@ -385,15 +393,17 @@ class SearchEngineURLQueryAnalyzer extends Extract {
     }
 
     @Override
-    public void process(Content dataSource, IngestJobContext context) {
+    public void process(Content dataSource, IngestJobContext context, DataSourceIngestModuleProgress progressBar) {
         this.dataSource = dataSource;
         this.context = context;
+        
+        progressBar.progress(Bundle.Progress_Message_Find_Search_Query());
         this.findSearchQueries();
         logger.log(Level.INFO, "Search Engine stats: \n{0}", getTotals()); //NON-NLS
     }
 
     @Override
-    void init() throws IngestModuleException {
+    void configExtractor() throws IngestModuleException {
         try {
             PlatformUtil.extractResourceToUserConfigDir(SearchEngineURLQueryAnalyzer.class, XMLFILE, true);
         } catch (IOException e) {

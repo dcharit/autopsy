@@ -1,15 +1,15 @@
 /*
  * Autopsy Forensic Browser
- * 
- * Copyright 2011-2015 Basis Technology Corp.
+ *
+ * Copyright 2011-2020 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- * 
+ *
  *     http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -24,6 +24,8 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -39,6 +41,7 @@ import org.openide.nodes.Sheet;
 import org.openide.util.NbBundle;
 import org.openide.util.lookup.Lookups;
 import org.sleuthkit.autopsy.casemodule.Case;
+import org.sleuthkit.autopsy.casemodule.NoCurrentCaseException;
 import org.sleuthkit.autopsy.coreutils.Logger;
 import org.sleuthkit.autopsy.ingest.IngestManager;
 import org.sleuthkit.autopsy.ingest.ModuleDataEvent;
@@ -48,7 +51,6 @@ import org.sleuthkit.datamodel.BlackboardAttribute.ATTRIBUTE_TYPE;
 import org.sleuthkit.datamodel.SleuthkitCase;
 import org.sleuthkit.datamodel.SleuthkitCase.CaseDbQuery;
 import org.sleuthkit.datamodel.TskCoreException;
-import org.sleuthkit.datamodel.TskException;
 
 /**
  * Hash set hits node support. Inner classes have all of the nodes in the tree.
@@ -58,17 +60,38 @@ public class HashsetHits implements AutopsyVisitableItem {
     private static final String HASHSET_HITS = BlackboardArtifact.ARTIFACT_TYPE.TSK_HASHSET_HIT.getLabel();
     private static final String DISPLAY_NAME = BlackboardArtifact.ARTIFACT_TYPE.TSK_HASHSET_HIT.getDisplayName();
     private static final Logger logger = Logger.getLogger(HashsetHits.class.getName());
+    private static final Set<IngestManager.IngestJobEvent> INGEST_JOB_EVENTS_OF_INTEREST = EnumSet.of(IngestManager.IngestJobEvent.COMPLETED, IngestManager.IngestJobEvent.CANCELLED);
+    private static final Set<IngestManager.IngestModuleEvent> INGEST_MODULE_EVENTS_OF_INTEREST = EnumSet.of(IngestManager.IngestModuleEvent.DATA_ADDED);
     private SleuthkitCase skCase;
     private final HashsetResults hashsetResults;
+    private final long filteringDSObjId; // 0 if not filtering/grouping by data source
 
+    /**
+     * Constructor
+     *
+     * @param skCase Case DB
+     *
+     */
     public HashsetHits(SleuthkitCase skCase) {
+        this(skCase, 0);
+    }
+
+    /**
+     * Constructor
+     *
+     * @param skCase Case DB
+     * @param objId  Object id of the data source
+     *
+     */
+    public HashsetHits(SleuthkitCase skCase, long objId) {
         this.skCase = skCase;
+        this.filteringDSObjId = objId;
         hashsetResults = new HashsetResults();
     }
 
     @Override
-    public <T> T accept(AutopsyItemVisitor<T> v) {
-        return v.visit(this);
+    public <T> T accept(AutopsyItemVisitor<T> visitor) {
+        return visitor.visit(this);
     }
 
     /**
@@ -95,7 +118,7 @@ public class HashsetHits implements AutopsyVisitableItem {
         }
 
         Set<Long> getArtifactIds(String hashSetName) {
-            synchronized (hashSetHitsMap) {            
+            synchronized (hashSetHitsMap) {
                 return hashSetHitsMap.get(hashSetName);
             }
         }
@@ -117,6 +140,9 @@ public class HashsetHits implements AutopsyVisitableItem {
                     + "attribute_type_id=" + setNameId //NON-NLS
                     + " AND blackboard_attributes.artifact_id=blackboard_artifacts.artifact_id" //NON-NLS
                     + " AND blackboard_artifacts.artifact_type_id=" + artId; //NON-NLS
+            if (filteringDSObjId > 0) {
+                query += "  AND blackboard_artifacts.data_source_obj_id = " + filteringDSObjId;
+            }
 
             try (CaseDbQuery dbQuery = skCase.executeQuery(query)) {
                 ResultSet resultSet = dbQuery.getResultSet();
@@ -125,7 +151,7 @@ public class HashsetHits implements AutopsyVisitableItem {
                         String setName = resultSet.getString("value_text"); //NON-NLS
                         long artifactId = resultSet.getLong("artifact_id"); //NON-NLS
                         if (!hashSetHitsMap.containsKey(setName)) {
-                            hashSetHitsMap.put(setName, new HashSet<Long>());
+                            hashSetHitsMap.put(setName, new HashSet<>());
                         }
                         hashSetHitsMap.get(setName).add(artifactId);
                     }
@@ -157,25 +183,25 @@ public class HashsetHits implements AutopsyVisitableItem {
         }
 
         @Override
-        public <T> T accept(DisplayableItemNodeVisitor<T> v) {
-            return v.visit(this);
+        public <T> T accept(DisplayableItemNodeVisitor<T> visitor) {
+            return visitor.visit(this);
         }
 
         @Override
         protected Sheet createSheet() {
-            Sheet s = super.createSheet();
-            Sheet.Set ss = s.get(Sheet.PROPERTIES);
-            if (ss == null) {
-                ss = Sheet.createPropertiesSet();
-                s.put(ss);
+            Sheet sheet = super.createSheet();
+            Sheet.Set sheetSet = sheet.get(Sheet.PROPERTIES);
+            if (sheetSet == null) {
+                sheetSet = Sheet.createPropertiesSet();
+                sheet.put(sheetSet);
             }
 
-            ss.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "HashsetHits.createSheet.name.name"),
+            sheetSet.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "HashsetHits.createSheet.name.name"),
                     NbBundle.getMessage(this.getClass(), "HashsetHits.createSheet.name.displayName"),
                     NbBundle.getMessage(this.getClass(), "HashsetHits.createSheet.name.desc"),
                     getName()));
 
-            return s;
+            return sheet;
         }
 
         @Override
@@ -206,7 +232,7 @@ public class HashsetHits implements AutopsyVisitableItem {
                      * that is already closed.
                      */
                     try {
-                        Case.getCurrentCase();
+                        Case.getCurrentCaseThrows();
                         /**
                          * Due to some unresolved issues with how cases are
                          * closed, it is possible for the event to have a null
@@ -216,7 +242,7 @@ public class HashsetHits implements AutopsyVisitableItem {
                         if (null != eventData && eventData.getBlackboardArtifactType().getTypeID() == ARTIFACT_TYPE.TSK_HASHSET_HIT.getTypeID()) {
                             hashsetResults.update();
                         }
-                    } catch (IllegalStateException notUsed) {
+                    } catch (NoCurrentCaseException notUsed) {
                         /**
                          * Case is closed, do nothing.
                          */
@@ -230,9 +256,9 @@ public class HashsetHits implements AutopsyVisitableItem {
                      * that is already closed.
                      */
                     try {
-                        Case.getCurrentCase();
+                        Case.getCurrentCaseThrows();
                         hashsetResults.update();
-                    } catch (IllegalStateException notUsed) {
+                    } catch (NoCurrentCaseException notUsed) {
                         /**
                          * Case is closed, do nothing.
                          */
@@ -249,9 +275,9 @@ public class HashsetHits implements AutopsyVisitableItem {
 
         @Override
         protected void addNotify() {
-            IngestManager.getInstance().addIngestJobEventListener(pcl);
-            IngestManager.getInstance().addIngestModuleEventListener(pcl);
-            Case.addPropertyChangeListener(pcl);
+            IngestManager.getInstance().addIngestJobEventListener(INGEST_JOB_EVENTS_OF_INTEREST, pcl);
+            IngestManager.getInstance().addIngestModuleEventListener(INGEST_MODULE_EVENTS_OF_INTEREST, pcl);
+            Case.addEventTypeSubscriber(EnumSet.of(Case.Events.CURRENT_CASE), pcl);
             hashsetResults.update();
             hashsetResults.addObserver(this);
         }
@@ -260,7 +286,7 @@ public class HashsetHits implements AutopsyVisitableItem {
         protected void removeNotify() {
             IngestManager.getInstance().removeIngestJobEventListener(pcl);
             IngestManager.getInstance().removeIngestModuleEventListener(pcl);
-            Case.removePropertyChangeListener(pcl);
+            Case.removeEventTypeSubscriber(EnumSet.of(Case.Events.CURRENT_CASE), pcl);
             hashsetResults.deleteObserver(this);
         }
 
@@ -311,24 +337,24 @@ public class HashsetHits implements AutopsyVisitableItem {
 
         @Override
         protected Sheet createSheet() {
-            Sheet s = super.createSheet();
-            Sheet.Set ss = s.get(Sheet.PROPERTIES);
-            if (ss == null) {
-                ss = Sheet.createPropertiesSet();
-                s.put(ss);
+            Sheet sheet = super.createSheet();
+            Sheet.Set sheetSet = sheet.get(Sheet.PROPERTIES);
+            if (sheetSet == null) {
+                sheetSet = Sheet.createPropertiesSet();
+                sheet.put(sheetSet);
             }
 
-            ss.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "HashsetHits.createSheet.name.name"),
+            sheetSet.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "HashsetHits.createSheet.name.name"),
                     NbBundle.getMessage(this.getClass(), "HashsetHits.createSheet.name.displayName"),
                     NbBundle.getMessage(this.getClass(), "HashsetHits.createSheet.name.desc"),
                     getName()));
 
-            return s;
+            return sheet;
         }
 
         @Override
-        public <T> T accept(DisplayableItemNodeVisitor<T> v) {
-            return v.visit(this);
+        public <T> T accept(DisplayableItemNodeVisitor<T> visitor) {
+            return visitor.visit(this);
         }
 
         @Override
@@ -349,49 +375,56 @@ public class HashsetHits implements AutopsyVisitableItem {
     /**
      * Creates the nodes for the hits in a given set.
      */
-    private class HitFactory extends ChildFactory.Detachable<Long> implements Observer {
+    private class HitFactory extends BaseChildFactory<BlackboardArtifact> implements Observer {
 
-        private String hashsetName;
+        private final String hashsetName;
+        private final Map<Long, BlackboardArtifact> artifactHits = new HashMap<>();
 
         private HitFactory(String hashsetName) {
-            super();
+            super(hashsetName);
             this.hashsetName = hashsetName;
         }
 
         @Override
-        protected void addNotify() {
+        protected void onAdd() {
             hashsetResults.addObserver(this);
         }
 
         @Override
-        protected void removeNotify() {
+        protected void onRemove() {
             hashsetResults.deleteObserver(this);
         }
 
         @Override
-        protected boolean createKeys(List<Long> list) {
-            list.addAll(hashsetResults.getArtifactIds(hashsetName));
-            return true;
-        }
-
-        @Override
-        protected Node createNodeForKey(Long id) {
-            if (skCase == null) {
-                return null;
-            }
-
-            try {
-                BlackboardArtifact art = skCase.getBlackboardArtifact(id);
-                return new BlackboardArtifactNode(art);
-            } catch (TskException ex) {
-                logger.log(Level.WARNING, "TSK Exception occurred", ex); //NON-NLS
-            }
-            return null;
+        protected Node createNodeForKey(BlackboardArtifact key) {
+            return new BlackboardArtifactNode(key);
         }
 
         @Override
         public void update(Observable o, Object arg) {
             refresh(true);
+        }
+
+        @Override
+        protected List<BlackboardArtifact> makeKeys() {
+            if (skCase != null) {
+
+                hashsetResults.getArtifactIds(hashsetName).forEach((id) -> {
+                    try {
+                        if (!artifactHits.containsKey(id)) {
+                            BlackboardArtifact art = skCase.getBlackboardArtifact(id);
+                            //Cache attributes while we are off the EDT.
+                            //See JIRA-5969
+                            art.getAttributes();
+                            artifactHits.put(id, art);
+                        }
+                    } catch (TskCoreException ex) {
+                        logger.log(Level.SEVERE, "TSK Exception occurred", ex); //NON-NLS
+                    }
+                });
+                return new ArrayList<>(artifactHits.values());
+            }
+            return Collections.emptyList();
         }
     }
 }

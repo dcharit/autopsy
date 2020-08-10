@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011-2014 Basis Technology Corp.
+ * Copyright 2011-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,12 +22,16 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.logging.Level;
 import org.sleuthkit.autopsy.coreutils.Logger;
+import org.sleuthkit.datamodel.AbstractContent;
 import org.sleuthkit.datamodel.Content;
 import org.sleuthkit.datamodel.ContentVisitor;
 import org.sleuthkit.datamodel.Directory;
 import org.sleuthkit.datamodel.AbstractFile;
 import org.sleuthkit.datamodel.Image;
 import org.sleuthkit.datamodel.VirtualDirectory;
+import org.sleuthkit.datamodel.LocalDirectory;
+import org.sleuthkit.datamodel.Pool;
+import org.sleuthkit.datamodel.Report;
 import org.sleuthkit.datamodel.TskException;
 import org.sleuthkit.datamodel.Volume;
 import org.sleuthkit.datamodel.VolumeSystem;
@@ -41,6 +45,11 @@ abstract class GetFilesContentVisitor implements ContentVisitor<Collection<Abstr
 
     @Override
     public Collection<AbstractFile> visit(VirtualDirectory ld) {
+        return getAllFromChildren(ld);
+    }
+    
+    @Override
+    public Collection<AbstractFile> visit(LocalDirectory ld) {
         return getAllFromChildren(ld);
     }
 
@@ -63,6 +72,16 @@ abstract class GetFilesContentVisitor implements ContentVisitor<Collection<Abstr
     public Collection<AbstractFile> visit(VolumeSystem vs) {
         return getAllFromChildren(vs);
     }
+    
+    @Override
+    public Collection<AbstractFile> visit(Pool pool) {
+        return getAllFromChildren(pool);
+    }
+
+    @Override
+    public Collection<AbstractFile> visit(Report r) {
+        return getAllFromChildren(r);
+    }
 
     /**
      * Aggregate all the matches from visiting the children Content objects of a
@@ -77,7 +96,9 @@ abstract class GetFilesContentVisitor implements ContentVisitor<Collection<Abstr
 
         try {
             for (Content child : parent.getChildren()) {
-                all.addAll(child.accept(this));
+                if (child instanceof AbstractContent){
+                    all.addAll(child.accept(this));
+                }
             }
         } catch (TskException ex) {
             logger.log(Level.SEVERE, "Error getting Content children", ex); //NON-NLS

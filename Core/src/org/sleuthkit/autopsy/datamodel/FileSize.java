@@ -1,15 +1,15 @@
 /*
  * Autopsy Forensic Browser
- * 
- * Copyright 2013-2015 Basis Technology Corp.
+ *
+ * Copyright 2013-2019 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- * 
+ *
  *     http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -22,9 +22,11 @@ import java.beans.PropertyChangeEvent;
 import java.beans.PropertyChangeListener;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Observable;
 import java.util.Observer;
+import java.util.Set;
 import java.util.logging.Level;
 import org.openide.nodes.AbstractNode;
 import org.openide.nodes.ChildFactory;
@@ -34,6 +36,7 @@ import org.openide.nodes.Sheet;
 import org.openide.util.NbBundle;
 import org.openide.util.lookup.Lookups;
 import org.sleuthkit.autopsy.casemodule.Case;
+import org.sleuthkit.autopsy.casemodule.NoCurrentCaseException;
 import org.sleuthkit.autopsy.coreutils.Logger;
 import org.sleuthkit.autopsy.ingest.IngestManager;
 import org.sleuthkit.datamodel.AbstractFile;
@@ -45,6 +48,7 @@ import org.sleuthkit.datamodel.File;
 import org.sleuthkit.datamodel.FsContent;
 import org.sleuthkit.datamodel.LayoutFile;
 import org.sleuthkit.datamodel.LocalFile;
+import org.sleuthkit.datamodel.SlackFile;
 import org.sleuthkit.datamodel.SleuthkitCase;
 import org.sleuthkit.datamodel.TskCoreException;
 import org.sleuthkit.datamodel.TskData;
@@ -56,6 +60,7 @@ import org.sleuthkit.datamodel.VirtualDirectory;
 public class FileSize implements AutopsyVisitableItem {
 
     private SleuthkitCase skCase;
+    private final long filteringDSObjId; // 0 if not filtering/grouping by data source
 
     public enum FileSizeFilter implements AutopsyVisitableItem {
 
@@ -86,22 +91,31 @@ public class FileSize implements AutopsyVisitableItem {
         }
 
         @Override
-        public <T> T accept(AutopsyItemVisitor<T> v) {
-            return v.visit(this);
+        public <T> T accept(AutopsyItemVisitor<T> visitor) {
+            return visitor.visit(this);
         }
     }
 
     public FileSize(SleuthkitCase skCase) {
+        this(skCase, 0);
+    }
+
+    public FileSize(SleuthkitCase skCase, long dsObjId) {
         this.skCase = skCase;
+        this.filteringDSObjId = dsObjId;
     }
 
     @Override
-    public <T> T accept(AutopsyItemVisitor<T> v) {
-        return v.visit(this);
+    public <T> T accept(AutopsyItemVisitor<T> visitor) {
+        return visitor.visit(this);
     }
 
     public SleuthkitCase getSleuthkitCase() {
         return this.skCase;
+    }
+
+    long filteringDataSourceObjId() {
+        return this.filteringDSObjId;
     }
 
     /*
@@ -111,8 +125,8 @@ public class FileSize implements AutopsyVisitableItem {
 
         private static final String NAME = NbBundle.getMessage(FileSize.class, "FileSize.fileSizeRootNode.name");
 
-        FileSizeRootNode(SleuthkitCase skCase) {
-            super(Children.create(new FileSizeRootChildren(skCase), true), Lookups.singleton(NAME));
+        FileSizeRootNode(SleuthkitCase skCase, long datasourceObjId) {
+            super(Children.create(new FileSizeRootChildren(skCase, datasourceObjId), true), Lookups.singleton(NAME));
             super.setName(NAME);
             super.setDisplayName(NAME);
             this.setIconBaseWithExtension("org/sleuthkit/autopsy/images/file-size-16.png"); //NON-NLS
@@ -124,24 +138,24 @@ public class FileSize implements AutopsyVisitableItem {
         }
 
         @Override
-        public <T> T accept(DisplayableItemNodeVisitor<T> v) {
-            return v.visit(this);
+        public <T> T accept(DisplayableItemNodeVisitor<T> visitor) {
+            return visitor.visit(this);
         }
 
         @Override
         protected Sheet createSheet() {
-            Sheet s = super.createSheet();
-            Sheet.Set ss = s.get(Sheet.PROPERTIES);
-            if (ss == null) {
-                ss = Sheet.createPropertiesSet();
-                s.put(ss);
+            Sheet sheet = super.createSheet();
+            Sheet.Set sheetSet = sheet.get(Sheet.PROPERTIES);
+            if (sheetSet == null) {
+                sheetSet = Sheet.createPropertiesSet();
+                sheet.put(sheetSet);
             }
 
-            ss.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "FileSize.createSheet.name.name"),
+            sheetSet.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "FileSize.createSheet.name.name"),
                     NbBundle.getMessage(this.getClass(), "FileSize.createSheet.name.displayName"),
                     NbBundle.getMessage(this.getClass(), "FileSize.createSheet.name.desc"),
                     NAME));
-            return s;
+            return sheet;
         }
 
         @Override
@@ -156,10 +170,12 @@ public class FileSize implements AutopsyVisitableItem {
     public static class FileSizeRootChildren extends ChildFactory<org.sleuthkit.autopsy.datamodel.FileSize.FileSizeFilter> {
 
         private SleuthkitCase skCase;
+        private final long datasourceObjId;
         private Observable notifier;
 
-        public FileSizeRootChildren(SleuthkitCase skCase) {
+        public FileSizeRootChildren(SleuthkitCase skCase, long datasourceObjId) {
             this.skCase = skCase;
+            this.datasourceObjId = datasourceObjId;
             notifier = new FileSizeRootChildrenObservable();
         }
 
@@ -167,65 +183,66 @@ public class FileSize implements AutopsyVisitableItem {
          * Listens for case and ingest invest. Updates observers when events are
          * fired. Size-based nodes are listening to this for changes.
          */
-        private final class FileSizeRootChildrenObservable extends Observable {
+        private static final class FileSizeRootChildrenObservable extends Observable {
+
+            private static final Set<Case.Events> CASE_EVENTS_OF_INTEREST = EnumSet.of(Case.Events.DATA_SOURCE_ADDED, Case.Events.CURRENT_CASE);
+            private static final Set<IngestManager.IngestJobEvent> INGEST_JOB_EVENTS_OF_INTEREST = EnumSet.of(IngestManager.IngestJobEvent.COMPLETED, IngestManager.IngestJobEvent.CANCELLED);
+            private static final Set<IngestManager.IngestModuleEvent> INGEST_MODULE_EVENTS_OF_INTEREST = EnumSet.of(IngestManager.IngestModuleEvent.CONTENT_CHANGED);
 
             FileSizeRootChildrenObservable() {
-                IngestManager.getInstance().addIngestJobEventListener(pcl);
-                IngestManager.getInstance().addIngestModuleEventListener(pcl);
-                Case.addPropertyChangeListener(pcl);
+                IngestManager.getInstance().addIngestJobEventListener(INGEST_JOB_EVENTS_OF_INTEREST, pcl);
+                IngestManager.getInstance().addIngestModuleEventListener(INGEST_MODULE_EVENTS_OF_INTEREST, pcl);
+                Case.addEventTypeSubscriber(CASE_EVENTS_OF_INTEREST, pcl);
             }
 
             private void removeListeners() {
                 deleteObservers();
                 IngestManager.getInstance().removeIngestJobEventListener(pcl);
                 IngestManager.getInstance().removeIngestModuleEventListener(pcl);
-                Case.removePropertyChangeListener(pcl);
+                Case.removeEventTypeSubscriber(CASE_EVENTS_OF_INTEREST, pcl);
             }
 
-            private final PropertyChangeListener pcl = new PropertyChangeListener() {
-                @Override
-                public void propertyChange(PropertyChangeEvent evt) {
-                    String eventType = evt.getPropertyName();
+            private final PropertyChangeListener pcl = (PropertyChangeEvent evt) -> {
+                String eventType = evt.getPropertyName();
 
-                    if (eventType.equals(IngestManager.IngestModuleEvent.CONTENT_CHANGED.toString())) {
+                if (eventType.equals(IngestManager.IngestModuleEvent.CONTENT_CHANGED.toString())) {
+                    /**
+                     * Checking for a current case is a stop gap measure until a
+                     * different way of handling the closing of cases is worked
+                     * out. Currently, remote events may be received for a case
+                     * that is already closed.
+                     */
+                    try {
+                        // new file was added
+                        // @@@ could check the size here and only fire off updates if we know the file meets the min size criteria
+                        Case.getCurrentCaseThrows();
+                        update();
+                    } catch (NoCurrentCaseException notUsed) {
                         /**
-                         * Checking for a current case is a stop gap measure
-                         * until a different way of handling the closing of
-                         * cases is worked out. Currently, remote events may be
-                         * received for a case that is already closed.
+                         * Case is closed, do nothing.
                          */
-                        try {
-                            // new file was added
-                            // @@@ could check the size here and only fire off updates if we know the file meets the min size criteria
-                            Case.getCurrentCase();
-                            update();
-                        } catch (IllegalStateException notUsed) {
-                            /**
-                             * Case is closed, do nothing.
-                             */
-                        }
-                    } else if (eventType.equals(IngestManager.IngestJobEvent.COMPLETED.toString())
-                            || eventType.equals(IngestManager.IngestJobEvent.CANCELLED.toString())
-                            || eventType.equals(Case.Events.DATA_SOURCE_ADDED.toString())) {
+                    }
+                } else if (eventType.equals(IngestManager.IngestJobEvent.COMPLETED.toString())
+                        || eventType.equals(IngestManager.IngestJobEvent.CANCELLED.toString())
+                        || eventType.equals(Case.Events.DATA_SOURCE_ADDED.toString())) {
+                    /**
+                     * Checking for a current case is a stop gap measure until a
+                     * different way of handling the closing of cases is worked
+                     * out. Currently, remote events may be received for a case
+                     * that is already closed.
+                     */
+                    try {
+                        Case.getCurrentCaseThrows();
+                        update();
+                    } catch (NoCurrentCaseException notUsed) {
                         /**
-                         * Checking for a current case is a stop gap measure
-                         * until a different way of handling the closing of
-                         * cases is worked out. Currently, remote events may be
-                         * received for a case that is already closed.
+                         * Case is closed, do nothing.
                          */
-                        try {
-                            Case.getCurrentCase();
-                            update();
-                        } catch (IllegalStateException notUsed) {
-                            /**
-                             * Case is closed, do nothing.
-                             */
-                        }
-                    } else if (eventType.equals(Case.Events.CURRENT_CASE.toString())) {
-                        // case was closed. Remove listeners so that we don't get called with a stale case handle
-                        if (evt.getNewValue() == null) {
-                            removeListeners();
-                        }
+                    }
+                } else if (eventType.equals(Case.Events.CURRENT_CASE.toString())) {
+                    // case was closed. Remove listeners so that we don't get called with a stale case handle
+                    if (evt.getNewValue() == null) {
+                        removeListeners();
                     }
                 }
             };
@@ -244,7 +261,7 @@ public class FileSize implements AutopsyVisitableItem {
 
         @Override
         protected Node createNodeForKey(FileSizeFilter key) {
-            return new FileSizeNode(skCase, key, notifier);
+            return new FileSizeNode(skCase, key, notifier, datasourceObjId);
         }
 
         /*
@@ -252,13 +269,15 @@ public class FileSize implements AutopsyVisitableItem {
          */
         public class FileSizeNode extends DisplayableItemNode {
 
-            private FileSizeFilter filter;
+            private final FileSizeFilter filter;
+            private final long datasourceObjId;
 
             // use version with observer instead so that it updates
             @Deprecated
-            FileSizeNode(SleuthkitCase skCase, FileSizeFilter filter) {
-                super(Children.create(new FileSizeChildren(filter, skCase, null), true), Lookups.singleton(filter.getDisplayName()));
+            FileSizeNode(SleuthkitCase skCase, FileSizeFilter filter, long datasourceObjId) {
+                super(Children.create(new FileSizeChildren(filter, skCase, null, datasourceObjId), true), Lookups.singleton(filter.getDisplayName()));
                 this.filter = filter;
+                this.datasourceObjId = datasourceObjId;
                 init();
             }
 
@@ -266,12 +285,15 @@ public class FileSize implements AutopsyVisitableItem {
              *
              * @param skCase
              * @param filter
-             * @param o      Observable that provides updates when events are
-             *               fired
+             * @param o               Observable that provides updates when
+             *                        events are fired
+             * @param datasourceObjId filter by data source, if configured in
+             *                        user preferences
              */
-            FileSizeNode(SleuthkitCase skCase, FileSizeFilter filter, Observable o) {
-                super(Children.create(new FileSizeChildren(filter, skCase, o), true), Lookups.singleton(filter.getDisplayName()));
+            FileSizeNode(SleuthkitCase skCase, FileSizeFilter filter, Observable o, long datasourceObjId) {
+                super(Children.create(new FileSizeChildren(filter, skCase, o, datasourceObjId), true), Lookups.singleton(filter.getDisplayName()));
                 this.filter = filter;
+                this.datasourceObjId = datasourceObjId;
                 init();
                 o.addObserver(new FileSizeNodeObserver());
             }
@@ -305,30 +327,30 @@ public class FileSize implements AutopsyVisitableItem {
             }
 
             private void updateDisplayName() {
-                final long count = FileSizeChildren.calculateItems(skCase, filter);
-                super.setDisplayName(filter.getDisplayName() + " (" + count + ")");
+                final long numVisibleChildren = FileSizeChildren.calculateItems(skCase, filter, datasourceObjId);
+                super.setDisplayName(filter.getDisplayName() + " (" + numVisibleChildren + ")");
             }
 
             @Override
-            public <T> T accept(DisplayableItemNodeVisitor<T> v) {
-                return v.visit(this);
+            public <T> T accept(DisplayableItemNodeVisitor<T> visitor) {
+                return visitor.visit(this);
             }
 
             @Override
             protected Sheet createSheet() {
-                Sheet s = super.createSheet();
-                Sheet.Set ss = s.get(Sheet.PROPERTIES);
-                if (ss == null) {
-                    ss = Sheet.createPropertiesSet();
-                    s.put(ss);
+                Sheet sheet = super.createSheet();
+                Sheet.Set sheetSet = sheet.get(Sheet.PROPERTIES);
+                if (sheetSet == null) {
+                    sheetSet = Sheet.createPropertiesSet();
+                    sheet.put(sheetSet);
                 }
 
-                ss.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "FileSize.createSheet.filterType.name"),
+                sheetSet.put(new NodeProperty<>(NbBundle.getMessage(this.getClass(), "FileSize.createSheet.filterType.name"),
                         NbBundle.getMessage(this.getClass(), "FileSize.createSheet.filterType.displayName"),
                         NbBundle.getMessage(this.getClass(), "FileSize.createSheet.filterType.desc"),
                         filter.getDisplayName()));
 
-                return s;
+                return sheet;
             }
 
             @Override
@@ -340,12 +362,13 @@ public class FileSize implements AutopsyVisitableItem {
         /*
          * Makes children, which are nodes for files of a given range
          */
-        static class FileSizeChildren extends ChildFactory.Detachable<AbstractFile> {
+        static class FileSizeChildren extends BaseChildFactory<AbstractFile> {
 
+            private static final Logger logger = Logger.getLogger(FileSizeChildren.class.getName());
             private final SleuthkitCase skCase;
             private final FileSizeFilter filter;
             private final Observable notifier;
-            private static final Logger logger = Logger.getLogger(FileSizeChildren.class.getName());
+            private final long datasourceObjId;
 
             /**
              *
@@ -354,27 +377,35 @@ public class FileSize implements AutopsyVisitableItem {
              * @param o      Observable that provides updates when new files are
              *               added to case
              */
-            FileSizeChildren(FileSizeFilter filter, SleuthkitCase skCase, Observable o) {
+            FileSizeChildren(FileSizeFilter filter, SleuthkitCase skCase, Observable o, long dsObjId) {
+                super(filter.getName(), new ViewsKnownAndSlackFilter<>());
                 this.skCase = skCase;
                 this.filter = filter;
                 this.notifier = o;
+                this.datasourceObjId = dsObjId;
+
             }
 
             @Override
-            protected void addNotify() {
+            protected void onAdd() {
                 if (notifier != null) {
                     notifier.addObserver(observer);
                 }
             }
 
             @Override
-            protected void removeNotify() {
+            protected void onRemove() {
                 if (notifier != null) {
                     notifier.deleteObserver(observer);
                 }
             }
 
             private final Observer observer = new FileSizeChildrenObserver();
+
+            @Override
+            protected List<AbstractFile> makeKeys() {
+                return runFsQuery();
+            }
 
             // Cause refresh of children if there are changes
             private class FileSizeChildrenObserver implements Observer {
@@ -385,13 +416,7 @@ public class FileSize implements AutopsyVisitableItem {
                 }
             }
 
-            @Override
-            protected boolean createKeys(List<AbstractFile> list) {
-                list.addAll(runFsQuery());
-                return true;
-            }
-
-            private static String makeQuery(FileSizeFilter filter) {
+            private static String makeQuery(FileSizeFilter filter, long filteringDSObjId) {
                 String query;
                 switch (filter) {
                     case SIZE_50_200:
@@ -408,8 +433,14 @@ public class FileSize implements AutopsyVisitableItem {
                     default:
                         throw new IllegalArgumentException("Unsupported filter type to get files by size: " + filter); //NON-NLS
                 }
-                // ignore unalloc block files
+
+                // Ignore unallocated block files.
                 query = query + " AND (type != " + TskData.TSK_DB_FILES_TYPE_ENUM.UNALLOC_BLOCKS.getFileType() + ")"; //NON-NLS
+
+                // filter by datasource if indicated in case preferences
+                if (filteringDSObjId > 0) {
+                    query += " AND data_source_obj_id = " + filteringDSObjId;
+                }
 
                 return query;
             }
@@ -418,7 +449,7 @@ public class FileSize implements AutopsyVisitableItem {
                 List<AbstractFile> ret = new ArrayList<>();
 
                 try {
-                    String query = makeQuery(filter);
+                    String query = makeQuery(filter, datasourceObjId);
 
                     ret = skCase.findAllFilesWhere(query);
                 } catch (Exception e) {
@@ -433,9 +464,9 @@ public class FileSize implements AutopsyVisitableItem {
              *
              * @return
              */
-            static long calculateItems(SleuthkitCase sleuthkitCase, FileSizeFilter filter) {
+            static long calculateItems(SleuthkitCase sleuthkitCase, FileSizeFilter filter, long datasourceObjId) {
                 try {
-                    return sleuthkitCase.countFilesWhere(makeQuery(filter));
+                    return sleuthkitCase.countFilesWhere(makeQuery(filter, datasourceObjId));
                 } catch (TskCoreException ex) {
                     logger.log(Level.SEVERE, "Error getting files by size search view count", ex); //NON-NLS
                     return 0;
@@ -480,6 +511,11 @@ public class FileSize implements AutopsyVisitableItem {
 
                     @Override
                     public FileNode visit(VirtualDirectory f) {
+                        return new FileNode(f, false);
+                    }
+
+                    @Override
+                    public FileNode visit(SlackFile f) {
                         return new FileNode(f, false);
                     }
 

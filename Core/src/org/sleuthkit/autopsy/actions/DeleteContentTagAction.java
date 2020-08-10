@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  * 
- * Copyright 2013-2015 Basis Technology Corp.
+ * Copyright 2013-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -26,7 +26,12 @@ import javax.swing.JOptionPane;
 import javax.swing.SwingUtilities;
 import org.openide.util.NbBundle;
 import org.openide.util.Utilities;
+import org.openide.windows.WindowManager;
 import org.sleuthkit.autopsy.casemodule.Case;
+import org.sleuthkit.autopsy.casemodule.NoCurrentCaseException;
+import org.sleuthkit.autopsy.casemodule.services.contentviewertags.ContentViewerTagManager;
+import org.sleuthkit.autopsy.casemodule.services.contentviewertags.ContentViewerTagManager.ContentViewerTag;
+import org.sleuthkit.autopsy.contentviewers.imagetagging.ImageTagRegion;
 import org.sleuthkit.autopsy.coreutils.Logger;
 import org.sleuthkit.datamodel.ContentTag;
 import org.sleuthkit.datamodel.TskCoreException;
@@ -34,11 +39,19 @@ import org.sleuthkit.datamodel.TskCoreException;
 /**
  * Instances of this Action allow users to delete tags applied to content.
  */
+@NbBundle.Messages({
+    "DeleteContentTagAction.deleteTag=Remove Selected Tag(s)",
+    "# {0} - tagName",
+    "DeleteContentTagAction.unableToDelTag.msg=Unable to delete tag {0}.",
+    "DeleteContentTagAction.tagDelErr=Tag Deletion Error"
+})
 public class DeleteContentTagAction extends AbstractAction {
+    
+    private static final Logger logger = Logger.getLogger(DeleteContentTagAction.class.getName());
 
     private static final long serialVersionUID = 1L;
     private static final String MENU_TEXT = NbBundle.getMessage(DeleteContentTagAction.class,
-            "DeleteContentTagAction.deleteTags");
+            "DeleteContentTagAction.deleteTag");
 
     // This class is a singleton to support multi-selection of nodes, since 
     // org.openide.nodes.NodeOp.findActions(Node[] nodes) will only pick up an Action if every 
@@ -62,17 +75,24 @@ public class DeleteContentTagAction extends AbstractAction {
         new Thread(() -> {
             for (ContentTag tag : selectedTags) {
                 try {
-                    Case.getCurrentCase().getServices().getTagsManager().deleteContentTag(tag);
-                } catch (TskCoreException ex) {
-                    Logger.getLogger(AddContentTagAction.class.getName()).log(Level.SEVERE, "Error deleting tag", ex); //NON-NLS
+                    // Check if there is an image tag before deleting the content tag.
+                    ContentViewerTag<ImageTagRegion> imageTag = ContentViewerTagManager.getTag(tag, ImageTagRegion.class);
+                    if(imageTag != null) {
+                        ContentViewerTagManager.deleteTag(imageTag);
+                    }
+                    
+                    Case.getCurrentCaseThrows().getServices().getTagsManager().deleteContentTag(tag);
+                } catch (TskCoreException | NoCurrentCaseException ex) {
+                    Logger.getLogger(DeleteContentTagAction.class.getName()).log(Level.SEVERE, "Error deleting tag", ex); //NON-NLS
                     SwingUtilities.invokeLater(() -> {
-                        JOptionPane.showMessageDialog(null,
+                        JOptionPane.showMessageDialog(WindowManager.getDefault().getMainWindow(),
                                 NbBundle.getMessage(this.getClass(),
                                         "DeleteContentTagAction.unableToDelTag.msg",
                                         tag.getName()),
                                 NbBundle.getMessage(this.getClass(), "DeleteContentTagAction.tagDelErr"),
                                 JOptionPane.ERROR_MESSAGE);
                     });
+                    break;
                 }
             }
         }).start();

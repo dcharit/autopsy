@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011-16 Basis Technology Corp.
+ * Copyright 2011-2020 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,17 +20,18 @@ package org.sleuthkit.autopsy.keywordsearch;
 
 import java.awt.ComponentOrientation;
 import java.awt.EventQueue;
-import java.awt.event.ActionEvent;
+import java.awt.Font;
 import java.awt.event.ActionListener;
 import java.awt.event.ItemEvent;
-import java.awt.event.ItemListener;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.logging.Level;
-import javax.swing.JMenuItem;
-import javax.swing.JTextPane;
+import javax.swing.JLabel;
 import javax.swing.SizeRequirements;
+import javax.swing.SwingUtilities;
 import javax.swing.SwingWorker;
 import javax.swing.text.Element;
 import javax.swing.text.View;
@@ -40,32 +41,49 @@ import javax.swing.text.html.HTMLEditorKit.HTMLFactory;
 import javax.swing.text.html.InlineView;
 import javax.swing.text.html.ParagraphView;
 import javax.swing.text.html.StyleSheet;
+import org.apache.commons.lang3.StringUtils;
 import org.netbeans.api.progress.ProgressHandle;
 import org.openide.util.NbBundle;
 import org.sleuthkit.autopsy.coreutils.EscapeUtil;
 import org.sleuthkit.autopsy.coreutils.Logger;
 import org.sleuthkit.autopsy.coreutils.TextUtil;
+import org.sleuthkit.autopsy.guiutils.WrapLayout;
 
 /**
  * Panel displays HTML content sent to ExtractedContentViewer, and provides a
  * combo-box to select between multiple sources.
  */
-class ExtractedContentPanel extends javax.swing.JPanel {
+@SuppressWarnings("PMD.SingularField") // UI widgets cause lots of false positives
+class ExtractedContentPanel extends javax.swing.JPanel implements ResizableTextPanel {
 
-    private static Logger logger = Logger.getLogger(ExtractedContentPanel.class.getName());
+    private static final Logger logger = Logger.getLogger(ExtractedContentPanel.class.getName());
+    
+    // set font as close as possible to default
+    private static final Font DEFAULT_FONT = new JLabel().getFont();
+    
+    private static final long serialVersionUID = 1L;
+    private String contentName;
+    private int curSize;
+    
+    private final StyleSheet styleSheet;
+    private final HTMLEditorKit editorKit;
+    private String lastKnownAnchor = null;
 
     ExtractedContentPanel() {
         initComponents();
+        additionalInit();
+        setSources("", new ArrayList<>());
+        hitPreviousButton.setEnabled(false);
+        hitNextButton.setEnabled(false);
 
-        initControls();
+        /*
+         * This appears to be an attempt to modify the wrapping behavior of the
+         * extractedTextPane taken form this website:
+         * http://java-sl.com/tip_html_letter_wrap.html.
+         */
+        editorKit = new HTMLEditorKit() {
+            private static final long serialVersionUID = 1L;
 
-        customizeComponents();
-
-    }
-
-    private void customizeComponents() {
-
-        HTMLEditorKit editorKit = new HTMLEditorKit() {
             @Override
             public ViewFactory getViewFactory() {
 
@@ -97,17 +115,18 @@ class ExtractedContentPanel extends javax.swing.JPanel {
                             return new ParagraphView(e) {
                                 @Override
                                 protected SizeRequirements calculateMinorAxisRequirements(int axis, SizeRequirements r) {
-                                    if (r == null) {
-                                        r = new SizeRequirements();
+                                    SizeRequirements requirements = r;
+                                    if (requirements == null) {
+                                        requirements = new SizeRequirements();
                                     }
                                     float pref = layoutPool.getPreferredSpan(axis);
                                     float min = layoutPool.getMinimumSpan(axis);
                                     // Don't include insets, Box.getXXXSpan will include them. 
-                                    r.minimum = (int) min;
-                                    r.preferred = Math.max(r.minimum, (int) pref);
-                                    r.maximum = Integer.MAX_VALUE;
-                                    r.alignment = 0.5f;
-                                    return r;
+                                    requirements.minimum = (int) min;
+                                    requirements.preferred = Math.max(requirements.minimum, (int) pref);
+                                    requirements.maximum = Integer.MAX_VALUE;
+                                    requirements.alignment = 0.5f;
+                                    return requirements;
                                 }
                             };
                         }
@@ -116,41 +135,64 @@ class ExtractedContentPanel extends javax.swing.JPanel {
                 };
             }
         };
-
-        // set font size manually in an effort to get fonts in this panel to look
-        // similar to what is in the 'String View' content viewer.
-        StyleSheet ss = editorKit.getStyleSheet();
-        ss.addRule("body {font-size: 8.5px;}"); //NON-NLS
-
-        extractedTextPane.setEditorKit(editorKit);
-
-        sourceComboBox.addItemListener(new ItemListener() {
-            @Override
-            public void itemStateChanged(ItemEvent e) {
-                if (e.getStateChange() == ItemEvent.SELECTED) {
-                    IndexedText source = (IndexedText) e.getItem();
-                    setMarkup(source);
-                }
+        // get the style sheet for editing font size
+        styleSheet = editorKit.getStyleSheet();
+        
+        sourceComboBox.addItemListener(itemEvent -> {
+            if (itemEvent.getStateChange() == ItemEvent.SELECTED) {
+                refreshCurrentMarkup();
             }
         });
-
-        setSources(new ArrayList<IndexedText>());
-
         extractedTextPane.setComponentPopupMenu(rightClickMenu);
-        ActionListener actList = new ActionListener() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                JMenuItem jmi = (JMenuItem) e.getSource();
-                if (jmi.equals(copyMenuItem)) {
-                    extractedTextPane.copy();
-                } else if (jmi.equals(selectAllMenuItem)) {
-                    extractedTextPane.selectAll();
-                }
-            }
-        };
-        copyMenuItem.addActionListener(actList);
-        selectAllMenuItem.addActionListener(actList);
+        copyMenuItem.addActionListener(actionEvent -> extractedTextPane.copy());
+        selectAllMenuItem.addActionListener(actionEvent -> extractedTextPane.selectAll());
+        
+        // TextZoomPanel could not be directly instantiated in Swing WYSIWYG editor 
+        // (because it was package private, couldn't use constructor, etc.)
+        // so it was identified as a JPanel for the WYSIWYG.  This function is called for
+        // initial setup so the font size of this panel as well as the font size indicated
+        // in the TextZoomPanel are correct
+        SwingUtilities.invokeLater(() -> {
+            if (zoomPanel instanceof TextZoomPanel)
+                ((TextZoomPanel) this.zoomPanel).resetSize();
+        });
     }
+    
+    
+    private void setStyleSheetSize(StyleSheet styleSheet, int size) {
+        styleSheet.addRule("body {font-family:\"" + DEFAULT_FONT.getFamily() + "\"; font-size:" + size + "pt; } ");
+    }
+    
+    
+    @Override
+    public int getTextSize() {
+        return curSize;
+    }
+
+    @Override
+    public void setTextSize(int newSize) {
+        curSize = newSize;
+
+        String curText = extractedTextPane.getText();
+        
+        setStyleSheetSize(styleSheet, curSize);
+        
+        editorKit.setStyleSheet(styleSheet);
+        extractedTextPane.setEditorKit(editorKit);
+
+        extractedTextPane.setText(curText);
+        if (lastKnownAnchor != null)
+            scrollToAnchor(lastKnownAnchor);
+    }
+    
+    
+    private void additionalInit() {
+        // use wrap layout for better component wrapping
+        WrapLayout layout = new WrapLayout(0,5);
+        layout.setOppositeAligned(Arrays.asList(textSourcePanel));
+        controlPanel.setLayout(layout);
+    }
+    
 
     /**
      * This method is called from within the constructor to initialize the form.
@@ -164,179 +206,217 @@ class ExtractedContentPanel extends javax.swing.JPanel {
         rightClickMenu = new javax.swing.JPopupMenu();
         copyMenuItem = new javax.swing.JMenuItem();
         selectAllMenuItem = new javax.swing.JMenuItem();
-        jScrollPane1 = new javax.swing.JScrollPane();
-        extractedTextPane = new JTextPane(){
-            public boolean getScrollableTracksViewportWidth() {
-                return (getSize().width < 400);
-            }};
-            sourceComboBox = new javax.swing.JComboBox<>();
-            hitLabel = new javax.swing.JLabel();
-            hitCountLabel = new javax.swing.JLabel();
-            hitOfLabel = new javax.swing.JLabel();
-            hitTotalLabel = new javax.swing.JLabel();
-            hitButtonsLabel = new javax.swing.JLabel();
-            hitPreviousButton = new javax.swing.JButton();
-            hitNextButton = new javax.swing.JButton();
-            pageButtonsLabel = new javax.swing.JLabel();
-            pagePreviousButton = new javax.swing.JButton();
-            pageNextButton = new javax.swing.JButton();
-            pagesLabel = new javax.swing.JLabel();
-            pageCurLabel = new javax.swing.JLabel();
-            pageOfLabel = new javax.swing.JLabel();
-            pageTotalLabel = new javax.swing.JLabel();
+        controlPanel = new javax.swing.JPanel();
+        javax.swing.JPanel pagePanel = new javax.swing.JPanel();
+        pagesLabel = new javax.swing.JLabel();
+        javax.swing.Box.Filler fillerSmall1 = new javax.swing.Box.Filler(new java.awt.Dimension(5, 0), new java.awt.Dimension(5, 0), new java.awt.Dimension(5, 32767));
+        pageCurLabel = new javax.swing.JLabel();
+        javax.swing.Box.Filler fillerSmall2 = new javax.swing.Box.Filler(new java.awt.Dimension(5, 0), new java.awt.Dimension(5, 0), new java.awt.Dimension(5, 32767));
+        pageOfLabel = new javax.swing.JLabel();
+        javax.swing.Box.Filler fillerSmall3 = new javax.swing.Box.Filler(new java.awt.Dimension(5, 0), new java.awt.Dimension(5, 0), new java.awt.Dimension(5, 32767));
+        pageTotalLabel = new javax.swing.JLabel();
+        javax.swing.Box.Filler fillerSmall4 = new javax.swing.Box.Filler(new java.awt.Dimension(5, 0), new java.awt.Dimension(5, 0), new java.awt.Dimension(5, 32767));
+        pageButtonsLabel = new javax.swing.JLabel();
+        javax.swing.Box.Filler fillerMed1 = new javax.swing.Box.Filler(new java.awt.Dimension(10, 0), new java.awt.Dimension(10, 0), new java.awt.Dimension(10, 32767));
+        pagePreviousButton = new javax.swing.JButton();
+        pageNextButton = new javax.swing.JButton();
+        javax.swing.Box.Filler fillerSmall6 = new javax.swing.Box.Filler(new java.awt.Dimension(5, 0), new java.awt.Dimension(5, 0), new java.awt.Dimension(5, 32767));
+        jSeparator2 = new javax.swing.JSeparator();
+        javax.swing.JPanel matchesPanel = new javax.swing.JPanel();
+        hitLabel = new javax.swing.JLabel();
+        hitCountLabel = new javax.swing.JLabel();
+        hitOfLabel = new javax.swing.JLabel();
+        hitTotalLabel = new javax.swing.JLabel();
+        hitButtonsLabel = new javax.swing.JLabel();
+        javax.swing.Box.Filler fillerMed2 = new javax.swing.Box.Filler(new java.awt.Dimension(10, 0), new java.awt.Dimension(10, 0), new java.awt.Dimension(10, 32767));
+        hitPreviousButton = new javax.swing.JButton();
+        hitNextButton = new javax.swing.JButton();
+        javax.swing.Box.Filler fillerSmall11 = new javax.swing.Box.Filler(new java.awt.Dimension(5, 0), new java.awt.Dimension(5, 0), new java.awt.Dimension(5, 32767));
+        jSeparator3 = new javax.swing.JSeparator();
+        javax.swing.JPanel zoomPanelWrapper = new javax.swing.JPanel();
+        zoomPanel = new TextZoomPanel(this);
+        javax.swing.Box.Filler fillerSmall14 = new javax.swing.Box.Filler(new java.awt.Dimension(5, 0), new java.awt.Dimension(5, 0), new java.awt.Dimension(5, 32767));
+        jSeparator4 = new javax.swing.JSeparator();
+        textSourcePanel = new javax.swing.JPanel();
+        jLabel1 = new javax.swing.JLabel();
+        javax.swing.Box.Filler fillerSmall12 = new javax.swing.Box.Filler(new java.awt.Dimension(5, 0), new java.awt.Dimension(5, 0), new java.awt.Dimension(5, 32767));
+        sourceComboBox = new javax.swing.JComboBox<>();
+        extractedScrollPane = new javax.swing.JScrollPane();
+        extractedTextPane = new javax.swing.JTextPane();
 
-            copyMenuItem.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.copyMenuItem.text")); // NOI18N
-            rightClickMenu.add(copyMenuItem);
+        copyMenuItem.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.copyMenuItem.text")); // NOI18N
+        rightClickMenu.add(copyMenuItem);
 
-            selectAllMenuItem.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.selectAllMenuItem.text")); // NOI18N
-            rightClickMenu.add(selectAllMenuItem);
+        selectAllMenuItem.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.selectAllMenuItem.text")); // NOI18N
+        rightClickMenu.add(selectAllMenuItem);
 
-            setPreferredSize(new java.awt.Dimension(700, 400));
+        setMinimumSize(new java.awt.Dimension(250, 0));
+        setPreferredSize(new java.awt.Dimension(250, 58));
+        setLayout(new java.awt.BorderLayout());
 
-            jScrollPane1.setBackground(new java.awt.Color(255, 255, 255));
-            jScrollPane1.setPreferredSize(new java.awt.Dimension(700, 400));
+        controlPanel.setLayout(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 0, 0));
 
-            extractedTextPane.setEditable(false);
-            extractedTextPane.setAutoscrolls(false);
-            extractedTextPane.setMaximumSize(new java.awt.Dimension(2000, 2000));
-            extractedTextPane.setPreferredSize(new java.awt.Dimension(700, 400));
-            jScrollPane1.setViewportView(extractedTextPane);
+        pagePanel.setLayout(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 0, 0));
 
-            sourceComboBox.setModel(new javax.swing.DefaultComboBoxModel<IndexedText>());
+        pagesLabel.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.pagesLabel.text")); // NOI18N
+        pagePanel.add(pagesLabel);
+        pagePanel.add(fillerSmall1);
 
-            hitLabel.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.hitLabel.text")); // NOI18N
-            hitLabel.setToolTipText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.hitLabel.toolTipText")); // NOI18N
+        pageCurLabel.setHorizontalAlignment(javax.swing.SwingConstants.CENTER);
+        pageCurLabel.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.pageCurLabel.text")); // NOI18N
+        pagePanel.add(pageCurLabel);
+        pagePanel.add(fillerSmall2);
 
-            hitCountLabel.setHorizontalAlignment(javax.swing.SwingConstants.CENTER);
-            hitCountLabel.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.hitCountLabel.text")); // NOI18N
-            hitCountLabel.setMaximumSize(new java.awt.Dimension(18, 14));
-            hitCountLabel.setMinimumSize(new java.awt.Dimension(18, 14));
-            hitCountLabel.setPreferredSize(new java.awt.Dimension(18, 14));
+        pageOfLabel.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.pageOfLabel.text")); // NOI18N
+        pagePanel.add(pageOfLabel);
+        pagePanel.add(fillerSmall3);
 
-            hitOfLabel.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.hitOfLabel.text")); // NOI18N
+        pageTotalLabel.setHorizontalAlignment(javax.swing.SwingConstants.CENTER);
+        pageTotalLabel.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.pageTotalLabel.text")); // NOI18N
+        pagePanel.add(pageTotalLabel);
+        pagePanel.add(fillerSmall4);
 
-            hitTotalLabel.setHorizontalAlignment(javax.swing.SwingConstants.CENTER);
-            hitTotalLabel.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.hitTotalLabel.text")); // NOI18N
-            hitTotalLabel.setMaximumSize(new java.awt.Dimension(18, 14));
-            hitTotalLabel.setMinimumSize(new java.awt.Dimension(18, 14));
-            hitTotalLabel.setPreferredSize(new java.awt.Dimension(18, 14));
+        pageButtonsLabel.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.pageButtonsLabel.text")); // NOI18N
+        pagePanel.add(pageButtonsLabel);
+        pagePanel.add(fillerMed1);
 
-            hitButtonsLabel.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.hitButtonsLabel.text")); // NOI18N
+        pagePreviousButton.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/btn_step_back.png"))); // NOI18N
+        pagePreviousButton.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.pagePreviousButton.text")); // NOI18N
+        pagePreviousButton.setActionCommand(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.pagePreviousButton.actionCommand")); // NOI18N
+        pagePreviousButton.setBorder(javax.swing.BorderFactory.createEmptyBorder(1, 1, 1, 1));
+        pagePreviousButton.setBorderPainted(false);
+        pagePreviousButton.setContentAreaFilled(false);
+        pagePreviousButton.setDisabledIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/btn_step_back_disabled.png"))); // NOI18N
+        pagePreviousButton.setMargin(new java.awt.Insets(2, 0, 2, 0));
+        pagePanel.add(pagePreviousButton);
 
-            hitPreviousButton.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/btn_step_back.png"))); // NOI18N NON-NLS
-            hitPreviousButton.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.hitPreviousButton.text")); // NOI18N
-            hitPreviousButton.setBorder(javax.swing.BorderFactory.createEmptyBorder(1, 1, 1, 1));
-            hitPreviousButton.setBorderPainted(false);
-            hitPreviousButton.setContentAreaFilled(false);
-            hitPreviousButton.setDisabledIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/btn_step_back_disabled.png"))); // NOI18N NON-NLS
-            hitPreviousButton.setMargin(new java.awt.Insets(2, 0, 2, 0));
-            hitPreviousButton.setPreferredSize(new java.awt.Dimension(23, 23));
-            hitPreviousButton.setRolloverIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/btn_step_back_hover.png"))); // NOI18N NON-NLS
+        pageNextButton.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/btn_step_forward.png"))); // NOI18N
+        pageNextButton.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.pageNextButton.text")); // NOI18N
+        pageNextButton.setBorder(javax.swing.BorderFactory.createEmptyBorder(1, 1, 1, 1));
+        pageNextButton.setBorderPainted(false);
+        pageNextButton.setContentAreaFilled(false);
+        pageNextButton.setDisabledIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/btn_step_forward_disabled.png"))); // NOI18N
+        pageNextButton.setMargin(new java.awt.Insets(2, 0, 2, 0));
+        pageNextButton.setPreferredSize(new java.awt.Dimension(23, 23));
+        pagePanel.add(pageNextButton);
+        pagePanel.add(fillerSmall6);
 
-            hitNextButton.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/btn_step_forward.png"))); // NOI18N NON-NLS
-            hitNextButton.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.hitNextButton.text")); // NOI18N
-            hitNextButton.setBorder(javax.swing.BorderFactory.createEmptyBorder(1, 1, 1, 1));
-            hitNextButton.setBorderPainted(false);
-            hitNextButton.setContentAreaFilled(false);
-            hitNextButton.setDisabledIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/btn_step_forward_disabled.png"))); // NOI18N NON-NLS
-            hitNextButton.setMargin(new java.awt.Insets(2, 0, 2, 0));
-            hitNextButton.setPreferredSize(new java.awt.Dimension(23, 23));
-            hitNextButton.setRolloverIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/btn_step_forward_hover.png"))); // NOI18N NON-NLS
+        jSeparator2.setOrientation(javax.swing.SwingConstants.VERTICAL);
+        jSeparator2.setMaximumSize(new java.awt.Dimension(2, 25));
+        jSeparator2.setMinimumSize(new java.awt.Dimension(2, 25));
+        jSeparator2.setPreferredSize(new java.awt.Dimension(2, 25));
+        pagePanel.add(jSeparator2);
 
-            pageButtonsLabel.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.pageButtonsLabel.text")); // NOI18N
+        controlPanel.add(pagePanel);
 
-            pagePreviousButton.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/btn_step_back.png"))); // NOI18N NON-NLS
-            pagePreviousButton.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.pagePreviousButton.text")); // NOI18N
-            pagePreviousButton.setActionCommand(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.pagePreviousButton.actionCommand")); // NOI18N
-            pagePreviousButton.setBorder(javax.swing.BorderFactory.createEmptyBorder(1, 1, 1, 1));
-            pagePreviousButton.setBorderPainted(false);
-            pagePreviousButton.setContentAreaFilled(false);
-            pagePreviousButton.setDisabledIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/btn_step_back_disabled.png"))); // NOI18N NON-NLS
-            pagePreviousButton.setMargin(new java.awt.Insets(2, 0, 2, 0));
+        matchesPanel.setLayout(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 0, 0));
 
-            pageNextButton.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/btn_step_forward.png"))); // NOI18N NON-NLS
-            pageNextButton.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.pageNextButton.text")); // NOI18N
-            pageNextButton.setBorder(javax.swing.BorderFactory.createEmptyBorder(1, 1, 1, 1));
-            pageNextButton.setBorderPainted(false);
-            pageNextButton.setContentAreaFilled(false);
-            pageNextButton.setDisabledIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/btn_step_forward_disabled.png"))); // NOI18N NON-NLS
-            pageNextButton.setMargin(new java.awt.Insets(2, 0, 2, 0));
-            pageNextButton.setPreferredSize(new java.awt.Dimension(23, 23));
+        hitLabel.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.hitLabel.text")); // NOI18N
+        hitLabel.setToolTipText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.hitLabel.toolTipText")); // NOI18N
+        matchesPanel.add(hitLabel);
 
-            pagesLabel.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.pagesLabel.text")); // NOI18N
+        hitCountLabel.setHorizontalAlignment(javax.swing.SwingConstants.CENTER);
+        hitCountLabel.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.hitCountLabel.text")); // NOI18N
+        hitCountLabel.setMaximumSize(new java.awt.Dimension(18, 14));
+        hitCountLabel.setMinimumSize(new java.awt.Dimension(18, 14));
+        hitCountLabel.setPreferredSize(new java.awt.Dimension(18, 14));
+        matchesPanel.add(hitCountLabel);
 
-            pageCurLabel.setHorizontalAlignment(javax.swing.SwingConstants.CENTER);
-            pageCurLabel.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.pageCurLabel.text")); // NOI18N
+        hitOfLabel.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.hitOfLabel.text")); // NOI18N
+        matchesPanel.add(hitOfLabel);
 
-            pageOfLabel.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.pageOfLabel.text")); // NOI18N
+        hitTotalLabel.setHorizontalAlignment(javax.swing.SwingConstants.CENTER);
+        hitTotalLabel.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.hitTotalLabel.text")); // NOI18N
+        hitTotalLabel.setMaximumSize(new java.awt.Dimension(18, 14));
+        hitTotalLabel.setMinimumSize(new java.awt.Dimension(18, 14));
+        hitTotalLabel.setPreferredSize(new java.awt.Dimension(18, 14));
+        matchesPanel.add(hitTotalLabel);
 
-            pageTotalLabel.setHorizontalAlignment(javax.swing.SwingConstants.CENTER);
-            pageTotalLabel.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.pageTotalLabel.text")); // NOI18N
+        hitButtonsLabel.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.hitButtonsLabel.text")); // NOI18N
+        matchesPanel.add(hitButtonsLabel);
+        matchesPanel.add(fillerMed2);
 
-            javax.swing.GroupLayout layout = new javax.swing.GroupLayout(this);
-            this.setLayout(layout);
-            layout.setHorizontalGroup(
-                layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                .addGroup(layout.createSequentialGroup()
-                    .addContainerGap()
-                    .addComponent(hitLabel)
-                    .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
-                    .addComponent(hitCountLabel, javax.swing.GroupLayout.PREFERRED_SIZE, 30, javax.swing.GroupLayout.PREFERRED_SIZE)
-                    .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
-                    .addComponent(hitOfLabel)
-                    .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
-                    .addComponent(hitTotalLabel, javax.swing.GroupLayout.PREFERRED_SIZE, 30, javax.swing.GroupLayout.PREFERRED_SIZE)
-                    .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
-                    .addComponent(hitButtonsLabel)
-                    .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                    .addComponent(hitPreviousButton, javax.swing.GroupLayout.PREFERRED_SIZE, 23, javax.swing.GroupLayout.PREFERRED_SIZE)
-                    .addGap(0, 0, 0)
-                    .addComponent(hitNextButton, javax.swing.GroupLayout.PREFERRED_SIZE, 23, javax.swing.GroupLayout.PREFERRED_SIZE)
-                    .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
-                    .addComponent(pagesLabel)
-                    .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                    .addComponent(pageCurLabel, javax.swing.GroupLayout.PREFERRED_SIZE, 30, javax.swing.GroupLayout.PREFERRED_SIZE)
-                    .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
-                    .addComponent(pageOfLabel)
-                    .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                    .addComponent(pageTotalLabel, javax.swing.GroupLayout.PREFERRED_SIZE, 30, javax.swing.GroupLayout.PREFERRED_SIZE)
-                    .addGap(18, 18, 18)
-                    .addComponent(pageButtonsLabel)
-                    .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
-                    .addComponent(pagePreviousButton)
-                    .addGap(0, 0, 0)
-                    .addComponent(pageNextButton, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                    .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
-                    .addComponent(sourceComboBox, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                .addComponent(jScrollPane1, javax.swing.GroupLayout.PREFERRED_SIZE, 0, Short.MAX_VALUE)
-            );
-            layout.setVerticalGroup(
-                layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                .addGroup(layout.createSequentialGroup()
-                    .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-                        .addComponent(sourceComboBox, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                        .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
-                            .addComponent(hitCountLabel, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                            .addComponent(hitOfLabel)
-                            .addComponent(hitTotalLabel, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                            .addComponent(hitLabel)
-                            .addComponent(hitButtonsLabel))
-                        .addComponent(hitPreviousButton, javax.swing.GroupLayout.PREFERRED_SIZE, 23, javax.swing.GroupLayout.PREFERRED_SIZE)
-                        .addComponent(hitNextButton, javax.swing.GroupLayout.PREFERRED_SIZE, 23, javax.swing.GroupLayout.PREFERRED_SIZE)
-                        .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
-                            .addComponent(pageButtonsLabel)
-                            .addComponent(pageTotalLabel)
-                            .addComponent(pagesLabel)
-                            .addComponent(pageCurLabel)
-                            .addComponent(pageOfLabel))
-                        .addComponent(pageNextButton, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                        .addComponent(pagePreviousButton, javax.swing.GroupLayout.PREFERRED_SIZE, 23, javax.swing.GroupLayout.PREFERRED_SIZE))
-                    .addGap(0, 0, 0)
-                    .addComponent(jScrollPane1, javax.swing.GroupLayout.DEFAULT_SIZE, 377, Short.MAX_VALUE))
-            );
-        }// </editor-fold>//GEN-END:initComponents
+        hitPreviousButton.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/btn_step_back.png"))); // NOI18N
+        hitPreviousButton.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.hitPreviousButton.text")); // NOI18N
+        hitPreviousButton.setBorder(javax.swing.BorderFactory.createEmptyBorder(1, 1, 1, 1));
+        hitPreviousButton.setBorderPainted(false);
+        hitPreviousButton.setContentAreaFilled(false);
+        hitPreviousButton.setDisabledIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/btn_step_back_disabled.png"))); // NOI18N
+        hitPreviousButton.setMargin(new java.awt.Insets(2, 0, 2, 0));
+        hitPreviousButton.setPreferredSize(new java.awt.Dimension(23, 23));
+        hitPreviousButton.setRolloverIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/btn_step_back_hover.png"))); // NOI18N
+        matchesPanel.add(hitPreviousButton);
+
+        hitNextButton.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/btn_step_forward.png"))); // NOI18N
+        hitNextButton.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.hitNextButton.text")); // NOI18N
+        hitNextButton.setBorder(javax.swing.BorderFactory.createEmptyBorder(1, 1, 1, 1));
+        hitNextButton.setBorderPainted(false);
+        hitNextButton.setContentAreaFilled(false);
+        hitNextButton.setDisabledIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/btn_step_forward_disabled.png"))); // NOI18N
+        hitNextButton.setMargin(new java.awt.Insets(2, 0, 2, 0));
+        hitNextButton.setPreferredSize(new java.awt.Dimension(23, 23));
+        hitNextButton.setRolloverIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/keywordsearch/btn_step_forward_hover.png"))); // NOI18N
+        matchesPanel.add(hitNextButton);
+        matchesPanel.add(fillerSmall11);
+
+        jSeparator3.setOrientation(javax.swing.SwingConstants.VERTICAL);
+        jSeparator3.setMaximumSize(new java.awt.Dimension(2, 25));
+        jSeparator3.setMinimumSize(new java.awt.Dimension(2, 25));
+        jSeparator3.setName(""); // NOI18N
+        jSeparator3.setPreferredSize(new java.awt.Dimension(2, 25));
+        matchesPanel.add(jSeparator3);
+
+        controlPanel.add(matchesPanel);
+
+        zoomPanelWrapper.setLayout(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 0, 0));
+
+        zoomPanel.setLayout(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 0, 0));
+        zoomPanelWrapper.add(zoomPanel);
+        zoomPanel.getAccessibleContext().setAccessibleName(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.AccessibleContext.accessibleName")); // NOI18N
+
+        zoomPanelWrapper.add(fillerSmall14);
+
+        jSeparator4.setOrientation(javax.swing.SwingConstants.VERTICAL);
+        jSeparator4.setMaximumSize(new java.awt.Dimension(2, 25));
+        jSeparator4.setMinimumSize(new java.awt.Dimension(2, 25));
+        jSeparator4.setName(""); // NOI18N
+        jSeparator4.setPreferredSize(new java.awt.Dimension(2, 25));
+        zoomPanelWrapper.add(jSeparator4);
+
+        controlPanel.add(zoomPanelWrapper);
+
+        textSourcePanel.setLayout(new java.awt.FlowLayout(java.awt.FlowLayout.CENTER, 0, 0));
+
+        jLabel1.setText(org.openide.util.NbBundle.getMessage(ExtractedContentPanel.class, "ExtractedContentPanel.jLabel1.text")); // NOI18N
+        textSourcePanel.add(jLabel1);
+        textSourcePanel.add(fillerSmall12);
+
+        sourceComboBox.setModel(new javax.swing.DefaultComboBoxModel<org.sleuthkit.autopsy.keywordsearch.IndexedText>());
+        sourceComboBox.setMaximumSize(new java.awt.Dimension(150, 32767));
+        sourceComboBox.setMinimumSize(new java.awt.Dimension(150, 25));
+        sourceComboBox.setPreferredSize(new java.awt.Dimension(150, 25));
+        textSourcePanel.add(sourceComboBox);
+
+        controlPanel.add(textSourcePanel);
+
+        add(controlPanel, java.awt.BorderLayout.NORTH);
+
+        extractedScrollPane.setBackground(new java.awt.Color(255, 255, 255));
+        extractedScrollPane.setPreferredSize(new java.awt.Dimension(640, 29));
+
+        extractedTextPane.setEditable(false);
+        extractedTextPane.setAutoscrolls(false);
+        extractedTextPane.setInheritsPopupMenu(true);
+        extractedTextPane.setMaximumSize(new java.awt.Dimension(2000, 2000));
+        extractedTextPane.setPreferredSize(new java.awt.Dimension(600, 29));
+        extractedScrollPane.setViewportView(extractedTextPane);
+
+        add(extractedScrollPane, java.awt.BorderLayout.CENTER);
+    }// </editor-fold>//GEN-END:initComponents
     // Variables declaration - do not modify//GEN-BEGIN:variables
+    private javax.swing.JPanel controlPanel;
     private javax.swing.JMenuItem copyMenuItem;
+    private javax.swing.JScrollPane extractedScrollPane;
     private javax.swing.JTextPane extractedTextPane;
     private javax.swing.JLabel hitButtonsLabel;
     private javax.swing.JLabel hitCountLabel;
@@ -345,7 +425,10 @@ class ExtractedContentPanel extends javax.swing.JPanel {
     private javax.swing.JLabel hitOfLabel;
     private javax.swing.JButton hitPreviousButton;
     private javax.swing.JLabel hitTotalLabel;
-    private javax.swing.JScrollPane jScrollPane1;
+    private javax.swing.JLabel jLabel1;
+    private javax.swing.JSeparator jSeparator2;
+    private javax.swing.JSeparator jSeparator3;
+    private javax.swing.JSeparator jSeparator4;
     private javax.swing.JLabel pageButtonsLabel;
     private javax.swing.JLabel pageCurLabel;
     private javax.swing.JButton pageNextButton;
@@ -355,45 +438,36 @@ class ExtractedContentPanel extends javax.swing.JPanel {
     private javax.swing.JLabel pagesLabel;
     private javax.swing.JPopupMenu rightClickMenu;
     private javax.swing.JMenuItem selectAllMenuItem;
-    private javax.swing.JComboBox<IndexedText> sourceComboBox;
+    private javax.swing.JComboBox<org.sleuthkit.autopsy.keywordsearch.IndexedText> sourceComboBox;
+    private javax.swing.JPanel textSourcePanel;
+    private javax.swing.JPanel zoomPanel;
     // End of variables declaration//GEN-END:variables
 
     void refreshCurrentMarkup() {
-        IndexedText ms = (IndexedText) sourceComboBox.getSelectedItem();
-        setMarkup(ms);
+        setMarkup(getSelectedSource());
     }
 
     /**
      * Set the available sources (selects the first source in the list by
      * default)
      *
-     * @param sources
+     * @param contentName The name of the content to be displayed
+     * @param sources     A list of IndexedText that have different 'views' of
+     *                    the content.
      */
-    void setSources(List<IndexedText> sources) {
-        sourceComboBox.removeAllItems();
+    final void setSources(String contentName, List<IndexedText> sources) {
+        this.lastKnownAnchor = null;
+        this.contentName = contentName;
         setPanelText(null, false);
 
-        for (IndexedText ms : sources) {
-            sourceComboBox.addItem(ms);
-        }
-
-        if (!sources.isEmpty()) {
+        sourceComboBox.removeAllItems();
+        sources.forEach(sourceComboBox::addItem);
+        if (false == sources.isEmpty()) {
+            sourceComboBox.setEnabled(true);
             sourceComboBox.setSelectedIndex(0);
+        } else {
+            sourceComboBox.setEnabled(false);
         }
-    }
-
-    /**
-     * Return the types of mark up sources that this viewer knows about.
-     * Different sources will markup the text in different ways.
-     *
-     * @return currently available sources on the panel
-     */
-    public List<IndexedText> getSources() {
-        ArrayList<IndexedText> sources = new ArrayList<>();
-        for (int i = 0; i < sourceComboBox.getItemCount(); ++i) {
-            sources.add(sourceComboBox.getItemAt(i));
-        }
-        return sources;
     }
 
     /**
@@ -406,20 +480,17 @@ class ExtractedContentPanel extends javax.swing.JPanel {
     }
 
     private void setPanelText(String text, boolean detectDirection) {
-        if (text == null) {
-            text = "";
-        }
+        String safeText = StringUtils.defaultString(text);
 
         if (detectDirection) {
             //detect text direction using first 1024 chars and set it
             //get first up to 1024 chars, strip <pre> tag and unescape html to get the string on which to detect
-            final int len = text.length();
+            final int len = safeText.length();
             final int prefixLen = "<pre>".length(); //NON-NLS
             if (len > prefixLen) {
                 final int maxOrientChars = Math.min(len, 1024);
-                final String orientDetectText = EscapeUtil.unEscapeHtml(text.substring(prefixLen, maxOrientChars));
+                final String orientDetectText = EscapeUtil.unEscapeHtml(safeText.substring(prefixLen, maxOrientChars));
                 ComponentOrientation direction = TextUtil.getTextDirection(orientDetectText);
-                //logger.log(Level.INFO, "ORIENTATION LEFT TO RIGHT: " + direction.isLeftToRight());
                 extractedTextPane.applyComponentOrientation(direction);
             } else {
                 extractedTextPane.applyComponentOrientation(ComponentOrientation.LEFT_TO_RIGHT);
@@ -428,20 +499,17 @@ class ExtractedContentPanel extends javax.swing.JPanel {
             extractedTextPane.applyComponentOrientation(ComponentOrientation.LEFT_TO_RIGHT);
         }
 
-        extractedTextPane.setText(text);
+        extractedTextPane.setText(safeText);
         extractedTextPane.setCaretPosition(0);
     }
 
-    private void initControls() {
-        hitPreviousButton.setEnabled(false);
-        hitNextButton.setEnabled(false);
-    }
-
     void scrollToAnchor(String anchor) {
+        lastKnownAnchor = anchor;
         extractedTextPane.scrollToReference(anchor);
     }
 
     /**
+     * Update the value displayed as the current match
      *
      * @param current, current hit to update the display with
      */
@@ -454,6 +522,7 @@ class ExtractedContentPanel extends javax.swing.JPanel {
     }
 
     /**
+     * Update the value dispalyed for the total number of matches
      *
      * @param total total number of hits to update the display with
      */
@@ -466,6 +535,7 @@ class ExtractedContentPanel extends javax.swing.JPanel {
     }
 
     /**
+     * Update the value displayed for the current page
      *
      * @param current, current page to update the display with
      */
@@ -474,30 +544,22 @@ class ExtractedContentPanel extends javax.swing.JPanel {
     }
 
     /**
+     * Update the value displayed for the total pages
      *
      * @param total total number of pages to update the display with
      */
-    void updateTotalPageslDisplay(int total) {
+    void updateTotalPagesDisplay(int total) {
         pageTotalLabel.setText(Integer.toString(total));
     }
 
-    void resetDisplay() {
-        resetHitDisplay();
-        resetPagesDisplay();
-    }
-
     /**
-     * reset the current/total hits display
+     * Reset the display including the current/total pages and the current/total
+     * hits
      */
-    void resetHitDisplay() {
+    void resetDisplay() {
+        setSources("", new ArrayList<>());
         hitTotalLabel.setText("-");
         hitCountLabel.setText("-");
-    }
-
-    /**
-     * reset the current/total pages display
-     */
-    void resetPagesDisplay() {
         pageCurLabel.setText("-");
         pageTotalLabel.setText("-");
     }
@@ -578,31 +640,21 @@ class ExtractedContentPanel extends javax.swing.JPanel {
             enableNextPageControl(false);
             enablePrevPageControl(false);
             updateCurrentPageDisplay(0);
-            updateTotalPageslDisplay(0);
+            updateTotalPagesDisplay(0);
             return;
         }
 
         updateCurrentPageDisplay(source.getCurrentPage());
         int totalPages = source.getNumberPages();
-        updateTotalPageslDisplay(totalPages);
+        updateTotalPagesDisplay(totalPages);
 
-        if (totalPages == 1) {
+        if (totalPages < 2) {
             enableNextPageControl(false);
             enablePrevPageControl(false);
         } else {
-            if (source.hasNextPage()) {
-                enableNextPageControl(true);
-            } else {
-                enableNextPageControl(false);
-            }
-
-            if (source.hasPreviousPage()) {
-                enablePrevPageControl(true);
-            } else {
-                enablePrevPageControl(false);
-            }
+            enableNextPageControl(source.hasNextPage());
+            enablePrevPageControl(source.hasPreviousPage());
         }
-
     }
 
     /**
@@ -613,22 +665,10 @@ class ExtractedContentPanel extends javax.swing.JPanel {
     void updateSearchControls(IndexedText source) {
         //setup search controls
         if (source != null && source.isSearchable()) {
-
             updateCurrentMatchDisplay(source.currentItem());
             updateTotaMatcheslDisplay(source.getNumberHits());
-
-            if (source.hasNextItem() || source.hasNextPage()) {
-                enableNextMatchControl(true);
-            } else {
-                enableNextMatchControl(false);
-            }
-
-            if (source.hasPreviousItem() || source.hasPreviousPage()) {
-                enablePrevMatchControl(true);
-            } else {
-                enablePrevMatchControl(false);
-            }
-
+            enableNextMatchControl(source.hasNextItem() || source.hasNextPage());
+            enablePrevMatchControl(source.hasPreviousItem() || source.hasPreviousPage());
         } else {
             enableNextMatchControl(false);
             enablePrevMatchControl(false);
@@ -657,9 +697,10 @@ class ExtractedContentPanel extends javax.swing.JPanel {
      * text). Updates GUI in GUI thread and gets markup in background thread. To
      * be invoked from GUI thread only.
      */
+    @NbBundle.Messages("ExtractedContentPanel.setMarkup.panelTxt=<span style='font-style:italic'>Loading text... Please wait</span>")
     private void setMarkup(IndexedText source) {
-        setPanelText(NbBundle.getMessage(this.getClass(), "ExtractedContentPanel.setMarkup.panelTxt"), false);
-        new SetMarkupWorker(source).execute();
+        setPanelText(Bundle.ExtractedContentPanel_setMarkup_panelTxt(), false);
+        new SetMarkupWorker(contentName, source).execute();
     }
 
     /**
@@ -669,26 +710,28 @@ class ExtractedContentPanel extends javax.swing.JPanel {
      */
     private final class SetMarkupWorker extends SwingWorker<String, Void> {
 
+        private final String contentName;
+
         private final IndexedText source;
 
         private ProgressHandle progress;
 
-        SetMarkupWorker(IndexedText source) {
+        SetMarkupWorker(String contentName, IndexedText source) {
+            this.contentName = contentName;
             this.source = source;
         }
 
         @Override
+        @NbBundle.Messages({"# {0} - Content name",
+            "ExtractedContentPanel.SetMarkup.progress.loading=Loading text for {0}"})
         protected String doInBackground() throws Exception {
-            progress = ProgressHandle.createHandle(NbBundle.getMessage(this.getClass(), "ExtractedContentPanel.SetMarkup.progress.loading"));
-            progress.setDisplayName(NbBundle.getMessage(this.getClass(), "ExtractedContentPanel.SetMarkup.progress.displayName"));
+            progress = ProgressHandle.createHandle(Bundle.ExtractedContentPanel_SetMarkup_progress_loading(contentName));
             progress.start();
             progress.switchToIndeterminate();
 
             return source.getText();
         }
 
-        @NbBundle.Messages({
-            "ExtractedContentPanel.SetMarkup.error=There was an error getting the text for the selected source."})
         @Override
         protected void done() {
             super.done();
@@ -702,16 +745,12 @@ class ExtractedContentPanel extends javax.swing.JPanel {
                 } else {
                     setPanelText("", false);
                 }
-
-            } catch (InterruptedException | ExecutionException ex) {
+            } catch (InterruptedException | CancellationException | ExecutionException ex) {
                 logger.log(Level.SEVERE, "Error getting marked up text", ex); //NON-NLS
-                setPanelText(Bundle.ExtractedContentPanel_SetMarkup_error(), true);
-            } // catch and ignore if we were cancelled
-            catch (java.util.concurrent.CancellationException ex) {
+                setPanelText(Bundle.IndexedText_errorMessage_errorGettingText(), true);
             }
 
             updateControls(source);
-
             scrollToCurrentHit(source);
         }
     }

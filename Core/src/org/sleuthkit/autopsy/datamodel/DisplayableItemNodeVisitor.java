@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011 - 2016 Basis Technology Corp.
+ * Copyright 2011 - 2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,12 +18,20 @@
  */
 package org.sleuthkit.autopsy.datamodel;
 
+import org.sleuthkit.autopsy.commonpropertiessearch.CentralRepoCommonAttributeInstanceNode;
+import org.sleuthkit.autopsy.commonpropertiessearch.CommonAttributeSearchResultRootNode;
+import org.sleuthkit.autopsy.commonpropertiessearch.InstanceCountNode;
+import org.sleuthkit.autopsy.commonpropertiessearch.InstanceCaseNode;
+import org.sleuthkit.autopsy.commonpropertiessearch.CommonAttributeValueNode;
+import org.sleuthkit.autopsy.commonpropertiessearch.CaseDBCommonAttributeInstanceNode;
+import org.sleuthkit.autopsy.commonpropertiessearch.InstanceDataSourceNode;
 import org.sleuthkit.autopsy.datamodel.DeletedContent.DeletedContentsChildren.DeletedContentNode;
 import org.sleuthkit.autopsy.datamodel.DeletedContent.DeletedContentsNode;
 import org.sleuthkit.autopsy.datamodel.FileSize.FileSizeRootChildren.FileSizeNode;
 import org.sleuthkit.autopsy.datamodel.FileSize.FileSizeRootNode;
 import org.sleuthkit.autopsy.datamodel.FileTypes.FileTypesNode;
 import org.sleuthkit.autopsy.datamodel.accounts.Accounts;
+import org.sleuthkit.autopsy.allcasessearch.CorrelationAttributeInstanceNode;
 
 /**
  * Visitor pattern that goes over all nodes in the directory tree. This includes
@@ -42,6 +50,8 @@ public interface DisplayableItemNodeVisitor<T> {
 
     T visit(VirtualDirectoryNode ldn);
 
+    T visit(LocalDirectoryNode ldn);
+
     T visit(DirectoryNode dn);
 
     T visit(FileNode fn);
@@ -49,6 +59,8 @@ public interface DisplayableItemNodeVisitor<T> {
     T visit(ImageNode in);
 
     T visit(VolumeNode vn);
+    
+    T visit(PoolNode pn);
 
     T visit(SlackFileNode sfn);
 
@@ -57,6 +69,8 @@ public interface DisplayableItemNodeVisitor<T> {
      * Views Area
      */
     T visit(ViewsNode vn);
+
+    T visit(DataSourceGroupingNode dataSourceGroupingNode);
 
     T visit(org.sleuthkit.autopsy.datamodel.FileTypesByExtension.FileExtensionNode fsfn);
 
@@ -91,6 +105,8 @@ public interface DisplayableItemNodeVisitor<T> {
 
     T visit(KeywordHits.TermNode khmln);
 
+    T visit(KeywordHits.RegExpInstanceNode khmln);
+
     T visit(HashsetHits.RootNode hhrn);
 
     T visit(HashsetHits.HashsetNameNode hhsn);
@@ -104,6 +120,22 @@ public interface DisplayableItemNodeVisitor<T> {
     T visit(InterestingHits.RootNode ihrn);
 
     T visit(InterestingHits.SetNameNode ihsn);
+
+    T visit(CommonAttributeValueNode cavn);
+
+    T visit(CommonAttributeSearchResultRootNode cfn);
+
+    T visit(CaseDBCommonAttributeInstanceNode fin);
+
+    T visit(CentralRepoCommonAttributeInstanceNode crfin);
+
+    T visit(InstanceCountNode icn);
+
+    T visit(InstanceCaseNode icn);
+
+    T visit(InstanceDataSourceNode icn);
+
+    T visit(CorrelationAttributeInstanceNode cain);
 
     /*
      * Tags
@@ -154,6 +186,13 @@ public interface DisplayableItemNodeVisitor<T> {
 
     T visit(EmptyNode.MessageNode emptyNode);
 
+    T visit(InterestingHits.InterestingItemTypeNode aThis);
+
+    /*
+     * Attachments
+     */
+    T visit(AttachmentNode node);
+    
     /**
      * Visitor with an implementable default behavior for all types. Override
      * specific visit types to not use the default behavior.
@@ -172,6 +211,46 @@ public interface DisplayableItemNodeVisitor<T> {
         protected abstract T defaultVisit(DisplayableItemNode c);
 
         @Override
+        public T visit(CaseDBCommonAttributeInstanceNode fin) {
+            return defaultVisit(fin);
+        }
+
+        @Override
+        public T visit(CommonAttributeValueNode cavn) {
+            return defaultVisit(cavn);
+        }
+
+        @Override
+        public T visit(CommonAttributeSearchResultRootNode cfn) {
+            return defaultVisit(cfn);
+        }
+
+        @Override
+        public T visit(InstanceCountNode icn) {
+            return defaultVisit(icn);
+        }
+
+        @Override
+        public T visit(InstanceCaseNode icn) {
+            return defaultVisit(icn);
+        }
+
+        @Override
+        public T visit(InstanceDataSourceNode icn) {
+            return defaultVisit(icn);
+        }
+
+        @Override
+        public T visit(CorrelationAttributeInstanceNode cain) {
+            return defaultVisit(cain);
+        }
+
+        @Override
+        public T visit(CentralRepoCommonAttributeInstanceNode crfin) {
+            return defaultVisit(crfin);
+        }
+
+        @Override
         public T visit(DirectoryNode dn) {
             return defaultVisit(dn);
         }
@@ -184,6 +263,11 @@ public interface DisplayableItemNodeVisitor<T> {
         @Override
         public T visit(ImageNode in) {
             return defaultVisit(in);
+        }
+        
+        @Override
+        public T visit(PoolNode pn) {
+            return defaultVisit(pn);
         }
 
         @Override
@@ -237,6 +321,11 @@ public interface DisplayableItemNodeVisitor<T> {
         }
 
         @Override
+        public T visit(InterestingHits.InterestingItemTypeNode interestingItemTypeNode) {
+            return defaultVisit(interestingItemTypeNode);
+        }
+
+        @Override
         public T visit(DeletedContentNode dcn) {
             return defaultVisit(dcn);
         }
@@ -282,6 +371,11 @@ public interface DisplayableItemNodeVisitor<T> {
         }
 
         @Override
+        public T visit(KeywordHits.RegExpInstanceNode khsn) {
+            return defaultVisit(khsn);
+        }
+
+        @Override
         public T visit(KeywordHits.TermNode khmln) {
             return defaultVisit(khmln);
         }
@@ -289,6 +383,11 @@ public interface DisplayableItemNodeVisitor<T> {
         @Override
         public T visit(ViewsNode vn) {
             return defaultVisit(vn);
+        }
+
+        @Override
+        public T visit(DataSourceGroupingNode dataSourceGroupingNode) {
+            return defaultVisit(dataSourceGroupingNode);
         }
 
         @Override
@@ -353,6 +452,11 @@ public interface DisplayableItemNodeVisitor<T> {
 
         @Override
         public T visit(VirtualDirectoryNode ldn) {
+            return defaultVisit(ldn);
+        }
+
+        @Override
+        public T visit(LocalDirectoryNode ldn) {
             return defaultVisit(ldn);
         }
 
@@ -430,5 +534,11 @@ public interface DisplayableItemNodeVisitor<T> {
         public T visit(Accounts.DefaultAccountTypeNode node) {
             return defaultVisit(node);
         }
+        
+        @Override
+        public T visit(AttachmentNode node) {
+            return defaultVisit(node);
+        }
+        
     }
 }

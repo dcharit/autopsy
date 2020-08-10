@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011-2015 Basis Technology Corp.
+ * Copyright 2011-2019 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,42 +18,47 @@
  */
 package org.sleuthkit.autopsy.ingest;
 
+import org.sleuthkit.autopsy.ingest.runIngestModuleWizard.RunIngestModulesAction;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import javax.swing.JComponent;
 import javax.swing.JMenuItem;
 import org.openide.awt.DynamicMenuContent;
 import org.openide.util.NbBundle;
 import org.sleuthkit.autopsy.casemodule.Case;
+import org.sleuthkit.autopsy.casemodule.NoCurrentCaseException;
+import org.sleuthkit.autopsy.coreutils.Logger;
 import org.sleuthkit.datamodel.Content;
-import org.sleuthkit.datamodel.Image;
-import org.sleuthkit.datamodel.SleuthkitCase;
 import org.sleuthkit.datamodel.TskCoreException;
 
 /**
- * This class is used to populate the list of open dataSources to run ingest on them
+ * This class is used to populate the list of open dataSources to run ingest on
+ * them
  */
 final class RunIngestSubMenu extends JMenuItem implements DynamicMenuContent {
-        
+
+    private static final Logger logger = Logger.getLogger(RunIngestSubMenu.class.getName());
+
     /**
-     * Creates main menu/popup menu items. It's called each time a popup menu 
-     * is constructed and just once for the main menu.
-     * Main menu updates happen through the synchMenuPresenters() method.
+     * Creates main menu/popup menu items. It's called each time a popup menu is
+     * constructed and just once for the main menu. Main menu updates happen
+     * through the synchMenuPresenters() method.
      *
      * @return
      */
     @Override
     public JComponent[] getMenuPresenters() {
         List<Content> dataSources = new ArrayList<>();
-        
-        try {    
-            dataSources = Case.getCurrentCase().getDataSources();
-        } catch (IllegalStateException ex) {
+
+        try {
+            dataSources = Case.getCurrentCaseThrows().getDataSources();
+        } catch (IllegalStateException | NoCurrentCaseException ex) {
             // No open Cases, create a disabled empty menu
             return getEmpty();
         } catch (TskCoreException e) {
             System.out.println("Exception getting images: " + e.getMessage()); //NON-NLS
-	}
+        }
         JComponent[] comps = new JComponent[dataSources.size()];
 
         // Add Images to the component list
@@ -61,7 +66,7 @@ final class RunIngestSubMenu extends JMenuItem implements DynamicMenuContent {
             String action = dataSources.get(i).getName();
             JMenuItem menuItem = new JMenuItem(action);
             menuItem.setActionCommand(action.toUpperCase());
-            menuItem.addActionListener(new RunIngestModulesAction(dataSources.get(i)));
+            menuItem.addActionListener(new RunIngestModulesAction(Collections.<Content>singletonList(dataSources.get(i))));
             comps[i] = menuItem;
         }
         // If no dataSources are open, create a disabled empty menu
@@ -70,7 +75,7 @@ final class RunIngestSubMenu extends JMenuItem implements DynamicMenuContent {
         }
         return comps;
     }
-    
+
     // returns a disabled empty menu
     private JComponent[] getEmpty() {
         JComponent[] comps = new JComponent[1];
@@ -94,6 +99,5 @@ final class RunIngestSubMenu extends JMenuItem implements DynamicMenuContent {
     public JComponent[] synchMenuPresenters(JComponent[] jcs) {
         return getMenuPresenters();
     }
-
 
 }

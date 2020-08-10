@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011-2015 Basis Technology Corp.
+ * Copyright 2011-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,6 +25,7 @@ import java.awt.Font;
 import java.awt.Graphics;
 import java.beans.PropertyChangeEvent;
 import java.beans.PropertyChangeListener;
+import java.util.EnumSet;
 import javax.swing.JButton;
 import org.openide.util.NbBundle;
 import org.openide.windows.Mode;
@@ -36,6 +37,7 @@ import org.sleuthkit.autopsy.core.RuntimeProperties;
  * Tool bar for an ingest messages button that allows a user to open the ingest
  * messages inbox top component.
  */
+@SuppressWarnings("PMD.SingularField") // UI widgets cause lots of false positives
 class IngestMessagesToolbar extends javax.swing.JPanel {
 
     private IngestMessagesButton ingestMessagesButton = new IngestMessagesButton();
@@ -82,9 +84,9 @@ class IngestMessagesToolbar extends javax.swing.JPanel {
 
         ingestMessagesButton.setFocusPainted(false);
         ingestMessagesButton.setContentAreaFilled(false);
-        ingestMessagesButton.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/ingest/eye-bw-25.png"))); //NON-NLS
+        ingestMessagesButton.setIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/ingest/mail24.png"))); //NON-NLS
         ingestMessagesButton.setRolloverEnabled(true);
-        ingestMessagesButton.setRolloverIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/ingest/eye-bw-25-rollover.png"))); //NON-NLS
+        ingestMessagesButton.setRolloverIcon(new javax.swing.ImageIcon(getClass().getResource("/org/sleuthkit/autopsy/ingest/mail24-rollover.png"))); //NON-NLS
         ingestMessagesButton.setToolTipText(
                 NbBundle.getMessage(this.getClass(), "IngestMessagesToolbar.customizeButton.toolTipText"));
         ingestMessagesButton.setBorder(null);
@@ -92,9 +94,9 @@ class IngestMessagesToolbar extends javax.swing.JPanel {
         ingestMessagesButton.setEnabled(false);
         ingestMessagesButton.setHorizontalTextPosition(javax.swing.SwingConstants.CENTER);
         ingestMessagesButton.setMargin(new java.awt.Insets(0, 0, 0, 0));
-        ingestMessagesButton.setMaximumSize(new java.awt.Dimension(38, 24));
-        ingestMessagesButton.setMinimumSize(new java.awt.Dimension(38, 24));
-        ingestMessagesButton.setPreferredSize(new java.awt.Dimension(38, 24));
+        ingestMessagesButton.setMaximumSize(new java.awt.Dimension(52, 24));
+        ingestMessagesButton.setMinimumSize(new java.awt.Dimension(52, 24));
+        ingestMessagesButton.setPreferredSize(new java.awt.Dimension(52, 24));
         ingestMessagesButton.addActionListener((java.awt.event.ActionEvent evt) -> {
             EventQueue.invokeLater(this::showIngestMessages);
         });
@@ -128,9 +130,9 @@ class IngestMessagesToolbar extends javax.swing.JPanel {
             }
         });
 
-        Case.addPropertyChangeListener((PropertyChangeEvent evt) -> {
+        Case.addEventTypeSubscriber(EnumSet.of(Case.Events.CURRENT_CASE), (PropertyChangeEvent evt) -> {
             if (evt.getPropertyName().equals(Case.Events.CURRENT_CASE.toString())) {
-                setEnabled(evt.getNewValue() != null && RuntimeProperties.coreComponentsAreActive());
+                setEnabled(evt.getNewValue() != null && RuntimeProperties.runningWithGUI());
             }
         });
     }

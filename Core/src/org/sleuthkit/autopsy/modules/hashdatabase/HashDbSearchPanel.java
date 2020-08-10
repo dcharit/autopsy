@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011 Basis Technology Corp.
+ * Copyright 2011-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -32,11 +32,13 @@ import javax.swing.table.DefaultTableModel;
 import javax.swing.text.AttributeSet;
 import javax.swing.text.BadLocationException;
 import javax.swing.text.PlainDocument;
+import org.sleuthkit.autopsy.casemodule.NoCurrentCaseException;
 import org.sleuthkit.autopsy.ingest.IngestManager;
 
 /**
  * Searches for files by md5 hash, based off the hash given in this panel.
  */
+@SuppressWarnings("PMD.SingularField") // UI widgets cause lots of false positives
 class HashDbSearchPanel extends javax.swing.JPanel implements ActionListener {
 
     private static final Logger logger = Logger.getLogger(HashDbSearchPanel.class.getName());
@@ -154,7 +156,7 @@ class HashDbSearchPanel extends javax.swing.JPanel implements ActionListener {
 
             },
             new String [] {
-                    NbBundle.getMessage(this.getClass(), "HashDbSearchPanel.hashTable.defaultModel.title.text")
+                "MD5 Hashes"
             }
         ) {
             Class[] types = new Class [] {
@@ -173,7 +175,9 @@ class HashDbSearchPanel extends javax.swing.JPanel implements ActionListener {
             }
         });
         jScrollPane1.setViewportView(hashTable);
+        if (hashTable.getColumnModel().getColumnCount() > 0) {
             hashTable.getColumnModel().getColumn(0).setHeaderValue(org.openide.util.NbBundle.getMessage(HashDbSearchPanel.class, "HashDbSearchPanel.hashTable.columnModel.title0")); // NOI18N
+        }
 
         hashField.setText(org.openide.util.NbBundle.getMessage(HashDbSearchPanel.class, "HashDbSearchPanel.hashField.text")); // NOI18N
 
@@ -240,7 +244,7 @@ class HashDbSearchPanel extends javax.swing.JPanel implements ActionListener {
                 .addComponent(jScrollPane1, javax.swing.GroupLayout.PREFERRED_SIZE, 171, javax.swing.GroupLayout.PREFERRED_SIZE)
                 .addGap(18, 18, 18)
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
-                    .addComponent(hashLabel, javax.swing.GroupLayout.PREFERRED_SIZE, 20, javax.swing.GroupLayout.PREFERRED_SIZE)
+                    .addComponent(hashLabel)
                     .addComponent(hashField, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
@@ -290,16 +294,27 @@ class HashDbSearchPanel extends javax.swing.JPanel implements ActionListener {
      * Search through all tsk_files to find ones with the same hashes as the
      * hashes given.
      */
+    @NbBundle.Messages ({
+        "HashDbSearchPanel.noOpenCase.errMsg=No open case available."
+    })
     boolean search() {
         // Check if any hashed have been entered
         if (hashTable.getRowCount() != 0) {
             // Make sure at least 1 file has an md5 hash
-            if (HashDbSearcher.countFilesMd5Hashed() > 0) {
-                return doSearch();
-            } else {
-                JOptionPane.showMessageDialog(null,
-                        NbBundle.getMessage(this.getClass(),
-                                "HashDbSearchPanel.noFilesHaveMD5HashMsg"),
+            try {
+                if (HashDbSearcher.countFilesMd5Hashed() > 0) {
+                    return doSearch();
+                } else {
+                    JOptionPane.showMessageDialog(this,
+                            NbBundle.getMessage(this.getClass(),
+                                    "HashDbSearchPanel.noFilesHaveMD5HashMsg"),
+                            NbBundle.getMessage(this.getClass(), "HashDbSearchPanel.dlgMsg.title"),
+                            JOptionPane.ERROR_MESSAGE);
+                    return false;
+                }
+            } catch (NoCurrentCaseException ex) {
+                JOptionPane.showMessageDialog(this,
+                        Bundle.HashDbSearchPanel_noOpenCase_errMsg(),
                         NbBundle.getMessage(this.getClass(), "HashDbSearchPanel.dlgMsg.title"),
                         JOptionPane.ERROR_MESSAGE);
                 return false;
@@ -315,7 +330,7 @@ class HashDbSearchPanel extends javax.swing.JPanel implements ActionListener {
         errorField.setVisible(false);
         // Get all the rows in the table
         int numRows = hashTable.getRowCount();
-        ArrayList<String> hashes = new ArrayList<String>();
+        ArrayList<String> hashes = new ArrayList<>();
         for (int i = 0; i < numRows; i++) {
             hashes.add((String) hashTable.getValueAt(i, 0));
         }

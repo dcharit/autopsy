@@ -1,15 +1,15 @@
 /*
  * Autopsy Forensic Browser
- * 
- * Copyright 2011-2016 Basis Technology Corp.
+ *
+ * Copyright 2011-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- * 
+ *
  *     http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -36,13 +36,22 @@ import javax.swing.KeyStroke;
 import javax.swing.table.AbstractTableModel;
 import org.openide.util.ImageUtilities;
 import org.openide.util.NbBundle;
+import org.openide.util.NbBundle.Messages;
 import org.openide.windows.WindowManager;
 import org.sleuthkit.autopsy.casemodule.Case;
+import org.sleuthkit.autopsy.casemodule.NoCurrentCaseException;
 import org.sleuthkit.autopsy.casemodule.services.TagsManager;
 import org.sleuthkit.autopsy.coreutils.Logger;
 import org.sleuthkit.datamodel.TagName;
 import org.sleuthkit.datamodel.TskCoreException;
+import org.sleuthkit.datamodel.TskData;
 
+/**
+ * Displays existing tag names, and allows the creation of new tags.
+ */
+@Messages({"GetTagNameDialog.descriptionLabel.text=Description:",
+    "GetTagNameDialog.notableCheckbox.text=Tag indicates item is notable."})
+@SuppressWarnings("PMD.SingularField") // UI widgets cause lots of false positives
 public class GetTagNameDialog extends JDialog {
 
     private static final long serialVersionUID = 1L;
@@ -79,7 +88,7 @@ public class GetTagNameDialog extends JDialog {
     }
 
     private GetTagNameDialog(Window owner) {
-        super(owner, 
+        super(owner,
                 NbBundle.getMessage(GetTagNameDialog.class, "GetTagNameDialog.createTag"),
                 ModalityType.APPLICATION_MODAL);
     }
@@ -95,7 +104,7 @@ public class GetTagNameDialog extends JDialog {
         ActionMap actionMap = getRootPane().getActionMap();
         actionMap.put(cancelName, new AbstractAction() {
             private static final long serialVersionUID = 1L;
-            
+
             @Override
             public void actionPerformed(ActionEvent e) {
                 cancelButtonActionPerformed(e);
@@ -104,10 +113,10 @@ public class GetTagNameDialog extends JDialog {
 
         // Get the current set of tag names and hash them for a speedy lookup in
         // case the user chooses an existing tag name from the tag names table.
-        TagsManager tagsManager = Case.getCurrentCase().getServices().getTagsManager();
         try {
+            TagsManager tagsManager = Case.getCurrentCaseThrows().getServices().getTagsManager();
             tagNamesMap.putAll(tagsManager.getDisplayNamesToTagNamesMap());
-        } catch (TskCoreException ex) {
+        } catch (TskCoreException | NoCurrentCaseException ex) {
             Logger.getLogger(GetTagNameDialog.class.getName()).log(Level.SEVERE, "Failed to get tag names", ex); //NON-NLS
         }
 
@@ -120,9 +129,9 @@ public class GetTagNameDialog extends JDialog {
 
         // Center and show the dialog box. 
         this.setLocationRelativeTo(this.getOwner());
-        setVisible(true);        
+        setVisible(true);
     }
-    
+
     private class TagsTableModel extends AbstractTableModel {
 
         private static final long serialVersionUID = 1L;
@@ -172,6 +181,10 @@ public class GetTagNameDialog extends JDialog {
         newTagPanel = new javax.swing.JPanel();
         tagNameLabel = new javax.swing.JLabel();
         tagNameField = new javax.swing.JTextField();
+        descriptionLabel = new javax.swing.JLabel();
+        descriptionScrollPane = new javax.swing.JScrollPane();
+        descriptionTextArea = new javax.swing.JTextArea();
+        notableCheckbox = new javax.swing.JCheckBox();
 
         setDefaultCloseOperation(javax.swing.WindowConstants.DISPOSE_ON_CLOSE);
         addKeyListener(new java.awt.event.KeyAdapter() {
@@ -205,6 +218,7 @@ public class GetTagNameDialog extends JDialog {
 
             }
         ));
+        tagsTable.setOpaque(false);
         tagsTable.setShowHorizontalLines(false);
         tagsTable.setShowVerticalLines(false);
         tagsTable.setTableHeader(null);
@@ -223,25 +237,45 @@ public class GetTagNameDialog extends JDialog {
             }
         });
 
+        org.openide.awt.Mnemonics.setLocalizedText(descriptionLabel, org.openide.util.NbBundle.getMessage(GetTagNameDialog.class, "GetTagNameDialog.descriptionLabel.text")); // NOI18N
+
+        descriptionTextArea.setColumns(20);
+        descriptionTextArea.setRows(3);
+        descriptionScrollPane.setViewportView(descriptionTextArea);
+
+        org.openide.awt.Mnemonics.setLocalizedText(notableCheckbox, org.openide.util.NbBundle.getMessage(GetTagNameDialog.class, "GetTagNameDialog.notableCheckbox.text")); // NOI18N
+
         javax.swing.GroupLayout newTagPanelLayout = new javax.swing.GroupLayout(newTagPanel);
         newTagPanel.setLayout(newTagPanelLayout);
         newTagPanelLayout.setHorizontalGroup(
             newTagPanelLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
             .addGroup(newTagPanelLayout.createSequentialGroup()
                 .addContainerGap()
-                .addComponent(tagNameLabel)
-                .addGap(36, 36, 36)
-                .addComponent(tagNameField, javax.swing.GroupLayout.DEFAULT_SIZE, 235, Short.MAX_VALUE)
+                .addGroup(newTagPanelLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                    .addComponent(descriptionScrollPane, javax.swing.GroupLayout.Alignment.TRAILING)
+                    .addComponent(tagNameField, javax.swing.GroupLayout.DEFAULT_SIZE, 323, Short.MAX_VALUE)
+                    .addGroup(newTagPanelLayout.createSequentialGroup()
+                        .addGroup(newTagPanelLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+                            .addComponent(notableCheckbox)
+                            .addComponent(descriptionLabel)
+                            .addComponent(tagNameLabel))
+                        .addGap(0, 0, Short.MAX_VALUE)))
                 .addContainerGap())
         );
         newTagPanelLayout.setVerticalGroup(
             newTagPanelLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
             .addGroup(newTagPanelLayout.createSequentialGroup()
-                .addContainerGap()
-                .addGroup(newTagPanelLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
-                    .addComponent(tagNameLabel)
-                    .addComponent(tagNameField, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                .addContainerGap(164, Short.MAX_VALUE))
+                .addGap(6, 6, 6)
+                .addComponent(tagNameLabel)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addComponent(tagNameField, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
+                .addComponent(descriptionLabel)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addComponent(descriptionScrollPane, javax.swing.GroupLayout.PREFERRED_SIZE, 57, javax.swing.GroupLayout.PREFERRED_SIZE)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
+                .addComponent(notableCheckbox)
+                .addContainerGap(31, Short.MAX_VALUE))
         );
 
         javax.swing.GroupLayout layout = new javax.swing.GroupLayout(getContentPane());
@@ -288,28 +322,41 @@ public class GetTagNameDialog extends JDialog {
         dispose();
     }//GEN-LAST:event_cancelButtonActionPerformed
 
+    @NbBundle.Messages({"GetTagNameDialog.tagNameAlreadyExists.message=Tag name must be unique. A tag with this name already exists.",
+        "GetTagNameDialog.tagNameAlreadyExists.title=Duplicate Tag Name",
+        "GetTagNameDialog.tagDescriptionIllegalCharacters.message=Tag descriptions may not contain commas (,) or semicolons (;)",
+        "GetTagNameDialog.tagDescriptionIllegalCharacters.title=Invalid character in tag description"})
     private void okButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_okButtonActionPerformed
         String tagDisplayName = tagNameField.getText();
+        String userTagDescription = descriptionTextArea.getText();
+        TskData.FileKnown status = notableCheckbox.isSelected() ? TskData.FileKnown.BAD : TskData.FileKnown.UNKNOWN;
         if (tagDisplayName.isEmpty()) {
-            JOptionPane.showMessageDialog(null,
+            JOptionPane.showMessageDialog(this,
                     NbBundle.getMessage(this.getClass(),
                             "GetTagNameDialog.mustSupplyTtagName.msg"),
                     NbBundle.getMessage(this.getClass(), "GetTagNameDialog.tagNameErr"),
                     JOptionPane.ERROR_MESSAGE);
         } else if (TagsManager.containsIllegalCharacters(tagDisplayName)) {
-            JOptionPane.showMessageDialog(null,
+            JOptionPane.showMessageDialog(this,
                     NbBundle.getMessage(this.getClass(), "GetTagNameDialog.illegalChars.msg"),
                     NbBundle.getMessage(this.getClass(), "GetTagNameDialog.illegalCharsErr"),
                     JOptionPane.ERROR_MESSAGE);
+        } else if (userTagDescription.contains(",")
+                || userTagDescription.contains(";")) {
+            JOptionPane.showMessageDialog(this,
+                    NbBundle.getMessage(this.getClass(), "GetTagNameDialog.tagDescriptionIllegalCharacters.message"),
+                    NbBundle.getMessage(this.getClass(), "GetTagNameDialog.tagDescriptionIllegalCharacters.title"),
+                    JOptionPane.ERROR_MESSAGE);
         } else {
             tagName = tagNamesMap.get(tagDisplayName);
+
             if (tagName == null) {
                 try {
-                    tagName = Case.getCurrentCase().getServices().getTagsManager().addTagName(tagDisplayName);
+                    tagName = Case.getCurrentCaseThrows().getServices().getTagsManager().addTagName(tagDisplayName, userTagDescription, TagName.HTML_COLOR.NONE, status);
                     dispose();
-                } catch (TskCoreException ex) {
+                } catch (TskCoreException | NoCurrentCaseException ex) {
                     Logger.getLogger(AddTagAction.class.getName()).log(Level.SEVERE, "Error adding " + tagDisplayName + " tag name", ex); //NON-NLS
-                    JOptionPane.showMessageDialog(null,
+                    JOptionPane.showMessageDialog(this,
                             NbBundle.getMessage(this.getClass(),
                                     "GetTagNameDialog.unableToAddTagNameToCase.msg",
                                     tagDisplayName),
@@ -318,10 +365,10 @@ public class GetTagNameDialog extends JDialog {
                     tagName = null;
                 } catch (TagsManager.TagNameAlreadyExistsException ex) {
                     try {
-                        tagName = Case.getCurrentCase().getServices().getTagsManager().getDisplayNamesToTagNamesMap().get(tagDisplayName);
-                    } catch (TskCoreException ex1) {
+                        tagName = Case.getCurrentCaseThrows().getServices().getTagsManager().getDisplayNamesToTagNamesMap().get(tagDisplayName);
+                    } catch (TskCoreException | NoCurrentCaseException ex1) {
                         Logger.getLogger(AddTagAction.class.getName()).log(Level.SEVERE, tagDisplayName + " exists in database but an error occurred in retrieving it.", ex1); //NON-NLS
-                        JOptionPane.showMessageDialog(null,
+                        JOptionPane.showMessageDialog(this,
                                 NbBundle.getMessage(this.getClass(),
                                         "GetTagNameDialog.tagNameExistsTskCore.msg",
                                         tagDisplayName),
@@ -331,7 +378,10 @@ public class GetTagNameDialog extends JDialog {
                     }
                 }
             } else {
-                dispose();
+                JOptionPane.showMessageDialog(this,
+                        NbBundle.getMessage(this.getClass(), "GetTagNameDialog.tagNameAlreadyExists.message"),
+                        NbBundle.getMessage(this.getClass(), "GetTagNameDialog.tagNameAlreadyExists.title"),
+                        JOptionPane.INFORMATION_MESSAGE);
             }
         }
     }//GEN-LAST:event_okButtonActionPerformed
@@ -350,8 +400,12 @@ public class GetTagNameDialog extends JDialog {
 
     // Variables declaration - do not modify//GEN-BEGIN:variables
     private javax.swing.JButton cancelButton;
+    private javax.swing.JLabel descriptionLabel;
+    private javax.swing.JScrollPane descriptionScrollPane;
+    private javax.swing.JTextArea descriptionTextArea;
     private javax.swing.JScrollPane jScrollPane1;
     private javax.swing.JPanel newTagPanel;
+    private javax.swing.JCheckBox notableCheckbox;
     private javax.swing.JButton okButton;
     private javax.swing.JLabel preexistingLabel;
     private javax.swing.JTextField tagNameField;

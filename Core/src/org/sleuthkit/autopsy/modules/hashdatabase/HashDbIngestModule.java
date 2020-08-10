@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011 - 2013 Basis Technology Corp.
+ * Copyright 2011-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,24 +20,28 @@ package org.sleuthkit.autopsy.modules.hashdatabase;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Function;
 import java.util.logging.Level;
+import java.util.stream.Stream;
 import org.openide.util.NbBundle;
 import org.openide.util.NbBundle.Messages;
 import org.sleuthkit.autopsy.casemodule.Case;
-import org.sleuthkit.autopsy.casemodule.services.Blackboard;
+import org.sleuthkit.autopsy.casemodule.NoCurrentCaseException;
 import org.sleuthkit.autopsy.coreutils.Logger;
 import org.sleuthkit.autopsy.coreutils.MessageNotifyUtil;
+import org.sleuthkit.autopsy.healthmonitor.HealthMonitor;
+import org.sleuthkit.autopsy.healthmonitor.TimingMetric;
 import org.sleuthkit.autopsy.ingest.FileIngestModule;
 import org.sleuthkit.autopsy.ingest.IngestMessage;
 import org.sleuthkit.autopsy.ingest.IngestModuleReferenceCounter;
 import org.sleuthkit.autopsy.ingest.IngestServices;
-import org.sleuthkit.autopsy.ingest.ModuleDataEvent;
 import org.sleuthkit.autopsy.modules.hashdatabase.HashDbManager.HashDb;
 import org.sleuthkit.datamodel.AbstractFile;
+import org.sleuthkit.datamodel.Blackboard;
 import org.sleuthkit.datamodel.BlackboardArtifact;
 import org.sleuthkit.datamodel.BlackboardArtifact.ARTIFACT_TYPE;
 import org.sleuthkit.datamodel.BlackboardAttribute;
@@ -49,32 +53,52 @@ import org.sleuthkit.datamodel.TskCoreException;
 import org.sleuthkit.datamodel.TskData;
 import org.sleuthkit.datamodel.TskException;
 
-@NbBundle.Messages({
-    "HashDbIngestModule.noKnownBadHashDbSetMsg=No known bad hash database set.",
-    "HashDbIngestModule.knownBadFileSearchWillNotExecuteWarn=Known bad file search will not be executed.",
-    "HashDbIngestModule.noKnownHashDbSetMsg=No known hash database set.",
-    "HashDbIngestModule.knownFileSearchWillNotExecuteWarn=Known file search will not be executed."
-})
+/**
+ * File ingest module to mark files based on hash values.
+ */
+@Messages({
+    "HashDbIngestModule.noKnownBadHashDbSetMsg=No notable hash set.",
+    "HashDbIngestModule.knownBadFileSearchWillNotExecuteWarn=Notable file search will not be executed.",
+    "HashDbIngestModule.noKnownHashDbSetMsg=No known hash set.",
+    "HashDbIngestModule.knownFileSearchWillNotExecuteWarn=Known file search will not be executed.",
+    "# {0} - fileName", "HashDbIngestModule.lookingUpKnownBadHashValueErr=Error encountered while looking up notable hash value for {0}.",
+    "# {0} - fileName", "HashDbIngestModule.lookingUpNoChangeHashValueErr=Error encountered while looking up no change hash value for {0}.",
+    "# {0} - fileName", "HashDbIngestModule.lookingUpKnownHashValueErr=Error encountered while looking up known hash value for {0}.",})
 public class HashDbIngestModule implements FileIngestModule {
 
     private static final Logger logger = Logger.getLogger(HashDbIngestModule.class.getName());
+
+    private final Function<AbstractFile, String> knownBadLookupError
+            = (file) -> Bundle.HashDbIngestModule_lookingUpKnownBadHashValueErr(file.getName());
+
+    private final Function<AbstractFile, String> noChangeLookupError
+            = (file) -> Bundle.HashDbIngestModule_lookingUpNoChangeHashValueErr(file.getName());
+
+    private final Function<AbstractFile, String> knownLookupError
+            = (file) -> Bundle.HashDbIngestModule_lookingUpKnownHashValueErr(file.getName());
+
     private static final int MAX_COMMENT_SIZE = 500;
     private final IngestServices services = IngestServices.getInstance();
-    private final SleuthkitCase skCase = Case.getCurrentCase().getSleuthkitCase();
+    private final SleuthkitCase skCase;
     private final HashDbManager hashDbManager = HashDbManager.getInstance();
     private final HashLookupModuleSettings settings;
-    private List<HashDb> knownBadHashSets = new ArrayList<>();
-    private List<HashDb> knownHashSets = new ArrayList<>();
+    private final List<HashDb> knownBadHashSets = new ArrayList<>();
+    private final List<HashDb> knownHashSets = new ArrayList<>();
+    private final List<HashDb> noChangeHashSets = new ArrayList<>();
     private long jobId;
     private static final HashMap<Long, IngestJobTotals> totalsForIngestJobs = new HashMap<>();
     private static final IngestModuleReferenceCounter refCounter = new IngestModuleReferenceCounter();
     private Blackboard blackboard;
 
+    /**
+     * A container of values for storing ingest metrics for the job.
+     */
     private static class IngestJobTotals {
 
-        private AtomicLong totalKnownBadCount = new AtomicLong(0);
-        private AtomicLong totalCalctime = new AtomicLong(0);
-        private AtomicLong totalLookuptime = new AtomicLong(0);
+        private final AtomicLong totalKnownBadCount = new AtomicLong(0);
+        private final AtomicLong totalNoChangeCount = new AtomicLong(0);
+        private final AtomicLong totalCalctime = new AtomicLong(0);
+        private final AtomicLong totalLookuptime = new AtomicLong(0);
     }
 
     private static synchronized IngestJobTotals getTotalsForIngestJobs(long ingestJobId) {
@@ -86,18 +110,28 @@ public class HashDbIngestModule implements FileIngestModule {
         return totals;
     }
 
-    HashDbIngestModule(HashLookupModuleSettings settings) {
+    /**
+     * Create a HashDbIngestModule object that will mark files based on a
+     * supplied list of hash values. The supplied HashLookupModuleSettings
+     * object is used to configure the module.
+     *
+     * @param settings The module settings.
+     *
+     * @throws NoCurrentCaseException If there is no open case.
+     */
+    HashDbIngestModule(HashLookupModuleSettings settings) throws NoCurrentCaseException {
         this.settings = settings;
+        skCase = Case.getCurrentCaseThrows().getSleuthkitCase();
     }
 
     @Override
     public void startUp(org.sleuthkit.autopsy.ingest.IngestJobContext context) throws IngestModuleException {
         jobId = context.getJobId();
         if (!hashDbManager.verifyAllDatabasesLoadedCorrectly()) {
-            throw new IngestModuleException("Could not load all hash databases");
+            throw new IngestModuleException("Could not load all hash sets");
         }
-        updateEnabledHashSets(hashDbManager.getKnownBadFileHashSets(), knownBadHashSets);
-        updateEnabledHashSets(hashDbManager.getKnownFileHashSets(), knownHashSets);
+
+        initializeHashsets(hashDbManager.getAllHashSets());
 
         if (refCounter.incrementAndGet(jobId) == 1) {
             // initialize job totals
@@ -121,34 +155,121 @@ public class HashDbIngestModule implements FileIngestModule {
     }
 
     /**
-     * Cycle through list of hashsets and return the subset that is enabled.
+     * Cycle through list of hashsets and place each HashDB in the appropriate
+     * list based on KnownFilesType.
      *
-     * @param allHashSets     List of all hashsets from DB manager
-     * @param enabledHashSets List of enabled ones to return.
+     * @param allHashSets List of all hashsets from DB manager
      */
-    private void updateEnabledHashSets(List<HashDb> allHashSets, List<HashDb> enabledHashSets) {
-        enabledHashSets.clear();
+    private void initializeHashsets(List<HashDb> allHashSets) {
         for (HashDb db : allHashSets) {
-            if (settings.isHashSetEnabled(db.getHashSetName())) {
+            if (settings.isHashSetEnabled(db)) {
                 try {
-                    if (db.hasIndex()) {
-                        enabledHashSets.add(db);
+                    if (db.isValid()) {
+                        switch (db.getKnownFilesType()) {
+                            case KNOWN:
+                                knownHashSets.add(db);
+                                break;
+                            case KNOWN_BAD:
+                                knownBadHashSets.add(db);
+                                break;
+                            case NO_CHANGE:
+                                noChangeHashSets.add(db);
+                                break;
+                            default:
+                                throw new TskCoreException("Unknown KnownFilesType: " + db.getKnownFilesType());
+                        }
                     }
                 } catch (TskCoreException ex) {
-                    logger.log(Level.WARNING, "Error getting index status for " + db.getHashSetName() + " hash database", ex); //NON-NLS
+                    logger.log(Level.WARNING, "Error getting index status for " + db.getDisplayName() + " hash set", ex); //NON-NLS
                 }
             }
         }
     }
 
+    @Messages({
+        "# {0} - File name",
+        "HashDbIngestModule.dialogTitle.errorFindingArtifacts=Error Finding Artifacts: {0}",
+        "# {0} - File name",
+        "HashDbIngestModule.errorMessage.lookingForFileArtifacts=Error encountered while looking for existing artifacts for {0}."
+    })
     @Override
     public ProcessResult process(AbstractFile file) {
-        blackboard = Case.getCurrentCase().getServices().getBlackboard();
+        try {
+            blackboard = Case.getCurrentCaseThrows().getSleuthkitCase().getBlackboard();
+        } catch (NoCurrentCaseException ex) {
+            logger.log(Level.SEVERE, "Exception while getting open case.", ex); //NON-NLS
+            return ProcessResult.ERROR;
+        }
 
-        // Skip unallocated space files.
-        if ((file.getType().equals(TskData.TSK_DB_FILES_TYPE_ENUM.UNALLOC_BLOCKS) ||
-                file.getType().equals(TskData.TSK_DB_FILES_TYPE_ENUM.SLACK))) {
+        if (shouldSkip(file)) {
             return ProcessResult.OK;
+        }
+
+        // Safely get a reference to the totalsForIngestJobs object
+        IngestJobTotals totals = getTotalsForIngestJobs(jobId);
+
+        // calc hash value        
+        String md5Hash = getHash(file, totals);
+        if (md5Hash == null) {
+            return ProcessResult.ERROR;
+        }
+
+        // the processing result of handling this file
+        ProcessResult ret = ProcessResult.OK;
+
+        // look up in notable first
+        FindInHashsetsResult knownBadResult = findInHashsets(file, totals.totalKnownBadCount,
+                totals.totalLookuptime, knownBadHashSets, TskData.FileKnown.BAD, knownBadLookupError);
+
+        boolean foundBad = knownBadResult.isFound();
+        if (knownBadResult.isError()) {
+            ret = ProcessResult.ERROR;
+        }
+
+        // look up no change items next
+        FindInHashsetsResult noChangeResult = findInHashsets(file, totals.totalNoChangeCount,
+                totals.totalLookuptime, noChangeHashSets, TskData.FileKnown.UNKNOWN, noChangeLookupError);
+
+        if (noChangeResult.isError()) {
+            ret = ProcessResult.ERROR;
+        }
+
+        // If the file is not in the notable sets, search for it in the known sets. 
+        // Any hit is sufficient to classify it as known, and there is no need to create 
+        // a hit artifact or send a message to the application inbox.
+        if (!foundBad) {
+            for (HashDb db : knownHashSets) {
+                try {
+                    long lookupstart = System.currentTimeMillis();
+                    if (db.lookupMD5Quick(file)) {
+                        file.setKnown(TskData.FileKnown.KNOWN);
+                        break;
+                    }
+                    long delta = (System.currentTimeMillis() - lookupstart);
+                    totals.totalLookuptime.addAndGet(delta);
+
+                } catch (TskException ex) {
+                    reportLookupError(ex, file, knownLookupError);
+                    ret = ProcessResult.ERROR;
+                }
+            }
+        }
+
+        return ret;
+    }
+
+    /**
+     * Returns true if this file should be skipped for processing.
+     *
+     * @param file The file to potentially skip.
+     *
+     * @return True if this file should be skipped.
+     */
+    private boolean shouldSkip(AbstractFile file) {
+        // Skip unallocated space files.
+        if ((file.getType().equals(TskData.TSK_DB_FILES_TYPE_ENUM.UNALLOC_BLOCKS)
+                || file.getType().equals(TskData.TSK_DB_FILES_TYPE_ENUM.SLACK))) {
+            return true;
         }
 
         /*
@@ -158,156 +279,256 @@ public class HashDbIngestModule implements FileIngestModule {
          * for it is developed.
          */
         if (file.isDir()) {
-            return ProcessResult.OK;
+            return true;
         }
 
         // bail out if we have no hashes set
         if ((knownHashSets.isEmpty()) && (knownBadHashSets.isEmpty()) && (!settings.shouldCalculateHashes())) {
-            return ProcessResult.OK;
+            return true;
         }
 
-        // Safely get a reference to the totalsForIngestJobs object
-        IngestJobTotals totals = getTotalsForIngestJobs(jobId);
+        return false;
+    }
 
-        // calc hash value
-        String name = file.getName();
-        String md5Hash = file.getMd5Hash();
-        if (md5Hash == null || md5Hash.isEmpty()) {
-            try {
-                long calcstart = System.currentTimeMillis();
-                md5Hash = HashUtility.calculateMd5(file);
-                long delta = (System.currentTimeMillis() - calcstart);
-                totals.totalCalctime.addAndGet(delta);
+    /**
+     * Reports an error when an issue is encountered looking up a file.
+     *
+     * @param ex                 The exception thrown in the error.
+     * @param file               The file for which this error applies.
+     * @param lookupErrorMessage The function that generates an error message
+     *                           specific to which piece of the ingest
+     *                           processing failed.
+     */
+    private void reportLookupError(TskException ex, AbstractFile file, Function<AbstractFile, String> lookupErrorMessage) {
+        logger.log(Level.WARNING, String.format(
+                "Couldn't lookup notable hash for file '%s' (id=%d) - see sleuthkit log for details", file.getName(), file.getId()), ex); //NON-NLS
+        services.postMessage(IngestMessage.createErrorMessage(
+                HashLookupModuleFactory.getModuleName(),
+                NbBundle.getMessage(this.getClass(), "HashDbIngestModule.hashLookupErrorMsg", file.getName()),
+                lookupErrorMessage.apply(file)));
+    }
 
-            } catch (IOException ex) {
-                logger.log(Level.WARNING, "Error calculating hash of file " + name, ex); //NON-NLS
-                services.postMessage(IngestMessage.createErrorMessage(
-                        HashLookupModuleFactory.getModuleName(),
-                        NbBundle.getMessage(this.getClass(),
-                                "HashDbIngestModule.fileReadErrorMsg",
-                                name),
-                        NbBundle.getMessage(this.getClass(),
-                                "HashDbIngestModule.calcHashValueErr",
-                                name)));
-                return ProcessResult.ERROR;
-            }
+    /**
+     * The result of attempting to find a file in a list of HashDB objects.
+     */
+    private static class FindInHashsetsResult {
+
+        private final boolean found;
+        private final boolean error;
+
+        FindInHashsetsResult(boolean found, boolean error) {
+            this.found = found;
+            this.error = error;
         }
 
-        // look up in known bad first
-        boolean foundBad = false;
-        ProcessResult ret = ProcessResult.OK;
-        for (HashDb db : knownBadHashSets) {
+        /**
+         * Returns true if the file was found in the HashDB.
+         *
+         * @return True if the file was found in the HashDB.
+         */
+        boolean isFound() {
+            return found;
+        }
+
+        /**
+         * Returns true if there was an error in the process of finding a file
+         * in a HashDB.
+         *
+         * @return True if there was an error in the process of finding a file
+         *         in a HashDB.
+         */
+        boolean isError() {
+            return error;
+        }
+    }
+
+    /**
+     * Attempts to find an abstract file in a list of HashDB objects.
+     *
+     * @param file               The file to find.
+     * @param totalCount         The total cound of files found in this type
+     * @param totalLookupTime    The counter tracking the total amount of run
+     *                           time for this operation.
+     * @param hashSets           The HashDB objects to cycle through looking for
+     *                           a hash hit.
+     * @param statusIfFound      The FileKnown status to set on the file if the
+     *                           file is found in the hashSets.
+     * @param lookupErrorMessage The function that generates a message should
+     *                           there be an error in looking up the file in the
+     *                           hashSets.
+     *
+     * @return Whether or not the file was found and whether or not there was an
+     *         error during the operation.
+     */
+    private FindInHashsetsResult findInHashsets(AbstractFile file, AtomicLong totalCount, AtomicLong totalLookupTime,
+            List<HashDb> hashSets, TskData.FileKnown statusIfFound, Function<AbstractFile, String> lookupErrorMessage) {
+
+        boolean found = false;
+        boolean wasError = false;
+        for (HashDb db : hashSets) {
             try {
                 long lookupstart = System.currentTimeMillis();
                 HashHitInfo hashInfo = db.lookupMD5(file);
                 if (null != hashInfo) {
-                    foundBad = true;
-                    totals.totalKnownBadCount.incrementAndGet();
+                    found = true;
 
-                    try {
-                        skCase.setKnown(file, TskData.FileKnown.BAD);
-                    } catch (TskException ex) {
-                        logger.log(Level.WARNING, "Couldn't set known bad state for file " + name + " - see sleuthkit log for details", ex); //NON-NLS
-                        services.postMessage(IngestMessage.createErrorMessage(
-                                HashLookupModuleFactory.getModuleName(),
-                                NbBundle.getMessage(this.getClass(),
-                                        "HashDbIngestModule.hashLookupErrorMsg",
-                                        name),
-                                NbBundle.getMessage(this.getClass(),
-                                        "HashDbIngestModule.settingKnownBadStateErr",
-                                        name)));
-                        ret = ProcessResult.ERROR;
+                    totalCount.incrementAndGet();
+                    file.setKnown(statusIfFound);
+                    String hashSetName = db.getDisplayName();
+                    String comment = generateComment(hashInfo);
+                    if (!createArtifactIfNotExists(hashSetName, file, comment, db)) {
+                        wasError = true;
                     }
-                    String hashSetName = db.getHashSetName();
-
-                    String comment = "";
-                    ArrayList<String> comments = hashInfo.getComments();
-                    int i = 0;
-                    for (String c : comments) {
-                        if (++i > 1) {
-                            comment += " ";
-                        }
-                        comment += c;
-                        if (comment.length() > MAX_COMMENT_SIZE) {
-                            comment = comment.substring(0, MAX_COMMENT_SIZE) + "...";
-                            break;
-                        }
-                    }
-
-                    postHashSetHitToBlackboard(file, md5Hash, hashSetName, comment, db.getSendIngestMessages());
                 }
                 long delta = (System.currentTimeMillis() - lookupstart);
-                totals.totalLookuptime.addAndGet(delta);
+                totalLookupTime.addAndGet(delta);
 
             } catch (TskException ex) {
-                logger.log(Level.WARNING, "Couldn't lookup known bad hash for file " + name + " - see sleuthkit log for details", ex); //NON-NLS
-                services.postMessage(IngestMessage.createErrorMessage(
-                        HashLookupModuleFactory.getModuleName(),
-                        NbBundle.getMessage(this.getClass(),
-                                "HashDbIngestModule.hashLookupErrorMsg",
-                                name),
-                        NbBundle.getMessage(this.getClass(),
-                                "HashDbIngestModule.lookingUpKnownBadHashValueErr",
-                                name)));
-                ret = ProcessResult.ERROR;
+                reportLookupError(ex, file, lookupErrorMessage);
+                wasError = true;
             }
         }
 
-        // If the file is not in the known bad sets, search for it in the known sets. 
-        // Any hit is sufficient to classify it as known, and there is no need to create 
-        // a hit artifact or send a message to the application inbox.
-        if (!foundBad) {
-            for (HashDb db : knownHashSets) {
-                try {
-                    long lookupstart = System.currentTimeMillis();
-                    if (db.lookupMD5Quick(file)) {
-                        try {
-                            skCase.setKnown(file, TskData.FileKnown.KNOWN);
-                            break;
-                        } catch (TskException ex) {
-                            logger.log(Level.WARNING, "Couldn't set known state for file " + name + " - see sleuthkit log for details", ex); //NON-NLS
-                            ret = ProcessResult.ERROR;
-                        }
-                    }
-                    long delta = (System.currentTimeMillis() - lookupstart);
-                    totals.totalLookuptime.addAndGet(delta);
-
-                } catch (TskException ex) {
-                    logger.log(Level.WARNING, "Couldn't lookup known hash for file " + name + " - see sleuthkit log for details", ex); //NON-NLS
-                    services.postMessage(IngestMessage.createErrorMessage(
-                            HashLookupModuleFactory.getModuleName(),
-                            NbBundle.getMessage(this.getClass(),
-                                    "HashDbIngestModule.hashLookupErrorMsg",
-                                    name),
-                            NbBundle.getMessage(this.getClass(),
-                                    "HashDbIngestModule.lookingUpKnownHashValueErr",
-                                    name)));
-                    ret = ProcessResult.ERROR;
-                }
-            }
-        }
-
-        return ret;
+        return new FindInHashsetsResult(found, wasError);
     }
 
-    @Messages({"HashDbIngestModule.indexError.message=Failed to index hashset hit artifact for keyword search."})
+    /**
+     * Generates a formatted comment.
+     *
+     * @param hashInfo The HashHitInfo.
+     *
+     * @return The formatted comment.
+     */
+    private String generateComment(HashHitInfo hashInfo) {
+        String comment = "";
+        ArrayList<String> comments = hashInfo.getComments();
+        int i = 0;
+        for (String c : comments) {
+            if (++i > 1) {
+                comment += " ";
+            }
+            comment += c;
+            if (comment.length() > MAX_COMMENT_SIZE) {
+                comment = comment.substring(0, MAX_COMMENT_SIZE) + "...";
+                break;
+            }
+        }
+        return comment;
+    }
+
+    /**
+     * Creates a BlackboardArtifact if artifact does not already exist.
+     *
+     * @param hashSetName The name of the hashset found.
+     * @param file        The file that had a hash hit.
+     * @param comment     The comment to associate with this artifact.
+     * @param db          the database in which this file was found.
+     *
+     * @return True if the operation occurred successfully and without error.
+     */
+    private boolean createArtifactIfNotExists(String hashSetName, AbstractFile file, String comment, HashDb db) {
+        /*
+         * We have a match. Now create an artifact if it is determined that one
+         * hasn't been created yet.
+         */
+        List<BlackboardAttribute> attributesList = new ArrayList<>();
+        attributesList.add(new BlackboardAttribute(ATTRIBUTE_TYPE.TSK_SET_NAME, HashLookupModuleFactory.getModuleName(), hashSetName));
+        try {
+            Blackboard tskBlackboard = skCase.getBlackboard();
+            if (tskBlackboard.artifactExists(file, BlackboardArtifact.ARTIFACT_TYPE.TSK_HASHSET_HIT, attributesList) == false) {
+                postHashSetHitToBlackboard(file, file.getMd5Hash(), hashSetName, comment, db.getSendIngestMessages());
+            }
+        } catch (TskCoreException ex) {
+            logger.log(Level.SEVERE, String.format(
+                    "A problem occurred while checking for existing artifacts for file '%s' (id=%d).", file.getName(), file.getId()), ex); //NON-NLS
+            services.postMessage(IngestMessage.createErrorMessage(
+                    HashLookupModuleFactory.getModuleName(),
+                    Bundle.HashDbIngestModule_dialogTitle_errorFindingArtifacts(file.getName()),
+                    Bundle.HashDbIngestModule_errorMessage_lookingForFileArtifacts(file.getName())));
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Retrieves the md5 hash for a file or generates one if no one exists on
+     * the file.
+     *
+     * @param file   The file in order to determine the hash.
+     * @param totals The timing metrics for this process.
+     *
+     * @return The found or determined md5 hash or null if none could be
+     *         determined.
+     */
+    private String getHash(AbstractFile file, IngestJobTotals totals) {
+        String md5Hash = file.getMd5Hash();
+        if (md5Hash != null && md5Hash.isEmpty()) {
+            return md5Hash;
+        }
+
+        try {
+            TimingMetric metric = HealthMonitor.getTimingMetric("Disk Reads: Hash calculation");
+            long calcstart = System.currentTimeMillis();
+            md5Hash = HashUtility.calculateMd5Hash(file);
+            if (file.getSize() > 0) {
+                // Surprisingly, the hash calculation does not seem to be correlated that
+                // strongly with file size until the files get large.
+                // Only normalize if the file size is greater than ~1MB.
+                if (file.getSize() < 1000000) {
+                    HealthMonitor.submitTimingMetric(metric);
+                } else {
+                    // In testing, this normalization gave reasonable resuls
+                    HealthMonitor.submitNormalizedTimingMetric(metric, file.getSize() / 500000);
+                }
+            }
+            file.setMd5Hash(md5Hash);
+            long delta = (System.currentTimeMillis() - calcstart);
+            totals.totalCalctime.addAndGet(delta);
+            return md5Hash;
+        } catch (IOException ex) {
+            logger.log(Level.WARNING, String.format("Error calculating hash of file '%s' (id=%d).", file.getName(), file.getId()), ex); //NON-NLS
+            services.postMessage(IngestMessage.createErrorMessage(
+                    HashLookupModuleFactory.getModuleName(),
+                    NbBundle.getMessage(this.getClass(), "HashDbIngestModule.fileReadErrorMsg", file.getName()),
+                    NbBundle.getMessage(this.getClass(), "HashDbIngestModule.calcHashValueErr",
+                            file.getParentPath() + file.getName(),
+                            file.isMetaFlagSet(TskData.TSK_FS_META_FLAG_ENUM.ALLOC) ? "Allocated File" : "Deleted File")));
+            return null;
+        }
+    }
+
+    /**
+     * Post a hash set hit to the blackboard.
+     *
+     * @param abstractFile     The file to be processed.
+     * @param md5Hash          The MD5 hash value of the file.
+     * @param hashSetName      The name of the hash set with which to associate
+     *                         the hit.
+     * @param comment          A comment to be attached to the artifact.
+     * @param showInboxMessage Show a message in the inbox?
+     */
+    @Messages({
+        "HashDbIngestModule.indexError.message=Failed to index hashset hit artifact for keyword search."
+    })
     private void postHashSetHitToBlackboard(AbstractFile abstractFile, String md5Hash, String hashSetName, String comment, boolean showInboxMessage) {
         try {
-            String MODULE_NAME = NbBundle.getMessage(HashDbIngestModule.class, "HashDbIngestModule.moduleName");
-
+            String moduleName = HashLookupModuleFactory.getModuleName();
             BlackboardArtifact badFile = abstractFile.newArtifact(ARTIFACT_TYPE.TSK_HASHSET_HIT);
+            Collection<BlackboardAttribute> attributes = new ArrayList<>();
             //TODO Revisit usage of deprecated constructor as per TSK-583
             //BlackboardAttribute att2 = new BlackboardAttribute(ATTRIBUTE_TYPE.TSK_SET_NAME.getTypeID(), MODULE_NAME, "Known Bad", hashSetName);
-            BlackboardAttribute att2 = new BlackboardAttribute(ATTRIBUTE_TYPE.TSK_SET_NAME, MODULE_NAME, hashSetName);
-            badFile.addAttribute(att2);
-            BlackboardAttribute att3 = new BlackboardAttribute(ATTRIBUTE_TYPE.TSK_HASH_MD5, MODULE_NAME, md5Hash);
-            badFile.addAttribute(att3);
-            BlackboardAttribute att4 = new BlackboardAttribute(ATTRIBUTE_TYPE.TSK_COMMENT, MODULE_NAME, comment);
-            badFile.addAttribute(att4);
+            attributes.add(new BlackboardAttribute(ATTRIBUTE_TYPE.TSK_SET_NAME, moduleName, hashSetName));
+            attributes.add(new BlackboardAttribute(ATTRIBUTE_TYPE.TSK_HASH_MD5, moduleName, md5Hash));
+            attributes.add(new BlackboardAttribute(ATTRIBUTE_TYPE.TSK_COMMENT, moduleName, comment));
+
+            badFile.addAttributes(attributes);
 
             try {
-                // index the artifact for keyword search
-                blackboard.indexArtifact(badFile);
+                /*
+                 * post the artifact which will index the artifact for keyword
+                 * search, and fire an event to notify UI of this new artifact
+                 */
+                blackboard.postArtifact(badFile, moduleName);
             } catch (Blackboard.BlackboardException ex) {
                 logger.log(Level.SEVERE, "Unable to index blackboard artifact " + badFile.getArtifactID(), ex); //NON-NLS
                 MessageNotifyUtil.Notify.error(
@@ -345,56 +566,60 @@ public class HashDbIngestModule implements FileIngestModule {
                 detailsSb.append("</table>"); //NON-NLS
 
                 services.postMessage(IngestMessage.createDataMessage(HashLookupModuleFactory.getModuleName(),
-                        NbBundle.getMessage(this.getClass(),
-                                "HashDbIngestModule.postToBB.knownBadMsg",
-                                abstractFile.getName()),
+                        NbBundle.getMessage(this.getClass(), "HashDbIngestModule.postToBB.knownBadMsg", abstractFile.getName()),
                         detailsSb.toString(),
                         abstractFile.getName() + md5Hash,
                         badFile));
             }
-            services.fireModuleDataEvent(new ModuleDataEvent(MODULE_NAME, ARTIFACT_TYPE.TSK_HASHSET_HIT, Collections.singletonList(badFile)));
         } catch (TskException ex) {
             logger.log(Level.WARNING, "Error creating blackboard artifact", ex); //NON-NLS
         }
     }
 
-    private static synchronized void postSummary(long jobId,
-            List<HashDb> knownBadHashSets, List<HashDb> knownHashSets) {
+    /**
+     * Post a message summarizing the results of the ingest.
+     *
+     * @param jobId            The ID of the job.
+     * @param knownBadHashSets The list of hash sets for "known bad" files.
+     * @param noChangeHashSets The list of "no change" hash sets.
+     * @param knownHashSets    The list of hash sets for "known" files.
+     */
+    @Messages("HashDbIngestModule.complete.noChangesFound=No Change items found:")
+    private static synchronized void postSummary(long jobId, List<HashDb> knownBadHashSets,
+            List<HashDb> noChangeHashSets, List<HashDb> knownHashSets) {
+
         IngestJobTotals jobTotals = getTotalsForIngestJobs(jobId);
         totalsForIngestJobs.remove(jobId);
 
-        if ((!knownBadHashSets.isEmpty()) || (!knownHashSets.isEmpty())) {
+        if ((!knownBadHashSets.isEmpty()) || (!knownHashSets.isEmpty()) || (!noChangeHashSets.isEmpty())) {
             StringBuilder detailsSb = new StringBuilder();
             //details
-            detailsSb.append("<table border='0' cellpadding='4' width='280'>"); //NON-NLS
+            detailsSb.append(
+                "<table border='0' cellpadding='4' width='280'>" +
+                    "<tr><td>" + NbBundle.getMessage(HashDbIngestModule.class, "HashDbIngestModule.complete.knownBadsFound") + "</td>" +
+                    "<td>" + jobTotals.totalKnownBadCount.get() + "</td></tr>" +
+                            
+                    "<tr><td>" + Bundle.HashDbIngestModule_complete_noChangesFound() + "</td>" +
+                    "<td>" + jobTotals.totalNoChangeCount.get() + "</td></tr>" +
+                            
+                    "<tr><td>" + NbBundle.getMessage(HashDbIngestModule.class, "HashDbIngestModule.complete.totalCalcTime") + 
+                    "</td><td>" + jobTotals.totalCalctime.get() + "</td></tr>\n" +
+                            
+                    "<tr><td>" + NbBundle.getMessage(HashDbIngestModule.class, "HashDbIngestModule.complete.totalLookupTime") + 
+                    "</td><td>" + jobTotals.totalLookuptime.get() + "</td></tr>\n</table>" +
 
-            detailsSb.append("<tr><td>") //NON-NLS
-                    .append(NbBundle.getMessage(HashDbIngestModule.class, "HashDbIngestModule.complete.knownBadsFound"))
-                    .append("</td>"); //NON-NLS
-            detailsSb.append("<td>").append(jobTotals.totalKnownBadCount.get()).append("</td></tr>"); //NON-NLS
-
-            detailsSb.append("<tr><td>") //NON-NLS
-                    .append(NbBundle.getMessage(HashDbIngestModule.class, "HashDbIngestModule.complete.totalCalcTime"))
-                    .append("</td><td>").append(jobTotals.totalCalctime.get()).append("</td></tr>\n"); //NON-NLS
-            detailsSb.append("<tr><td>") //NON-NLS
-                    .append(NbBundle.getMessage(HashDbIngestModule.class, "HashDbIngestModule.complete.totalLookupTime"))
-                    .append("</td><td>").append(jobTotals.totalLookuptime.get()).append("</td></tr>\n"); //NON-NLS
-            detailsSb.append("</table>"); //NON-NLS
-
-            detailsSb.append("<p>") //NON-NLS
-                    .append(NbBundle.getMessage(HashDbIngestModule.class, "HashDbIngestModule.complete.databasesUsed"))
-                    .append("</p>\n<ul>"); //NON-NLS
-            for (HashDb db : knownBadHashSets) {
-                detailsSb.append("<li>").append(db.getHashSetName()).append("</li>\n"); //NON-NLS
-            }
+                    "<p>" + NbBundle.getMessage(HashDbIngestModule.class, "HashDbIngestModule.complete.databasesUsed") + "</p>\n<ul>"); //NON-NLS
+            
+            Stream.concat(knownBadHashSets.stream(), noChangeHashSets.stream()).forEach((db) -> {
+                detailsSb.append("<li>" + db.getHashSetName() + "</li>\n"); //NON-NLS    
+            });
 
             detailsSb.append("</ul>"); //NON-NLS
 
             IngestServices.getInstance().postMessage(IngestMessage.createMessage(
                     IngestMessage.MessageType.INFO,
                     HashLookupModuleFactory.getModuleName(),
-                    NbBundle.getMessage(HashDbIngestModule.class,
-                            "HashDbIngestModule.complete.hashLookupResults"),
+                    NbBundle.getMessage(HashDbIngestModule.class, "HashDbIngestModule.complete.hashLookupResults"),
                     detailsSb.toString()));
         }
     }
@@ -402,7 +627,7 @@ public class HashDbIngestModule implements FileIngestModule {
     @Override
     public void shutDown() {
         if (refCounter.decrementAndGet(jobId) == 0) {
-            postSummary(jobId, knownBadHashSets, knownHashSets);
+            postSummary(jobId, knownBadHashSets, noChangeHashSets, knownHashSets);
         }
     }
 }

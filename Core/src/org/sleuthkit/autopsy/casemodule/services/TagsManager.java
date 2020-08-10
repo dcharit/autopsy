@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011-2016 Basis Technology Corp.
+ * Copyright 2013-2020 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,7 +20,8 @@ package org.sleuthkit.autopsy.casemodule.services;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -29,14 +30,21 @@ import java.util.Set;
 import java.util.logging.Level;
 import org.openide.util.NbBundle;
 import org.sleuthkit.autopsy.casemodule.Case;
+import org.sleuthkit.autopsy.casemodule.NoCurrentCaseException;
+import org.sleuthkit.autopsy.casemodule.services.contentviewertags.ContentViewerTagManager;
 import org.sleuthkit.autopsy.coreutils.Logger;
 import org.sleuthkit.datamodel.BlackboardArtifact;
 import org.sleuthkit.datamodel.BlackboardArtifactTag;
+import org.sleuthkit.datamodel.CaseDbAccessManager;
 import org.sleuthkit.datamodel.Content;
 import org.sleuthkit.datamodel.ContentTag;
 import org.sleuthkit.datamodel.SleuthkitCase;
 import org.sleuthkit.datamodel.TagName;
+import org.sleuthkit.datamodel.TagSet;
+import org.sleuthkit.datamodel.TaggingManager;
 import org.sleuthkit.datamodel.TskCoreException;
+import org.sleuthkit.datamodel.TskData;
+import org.sleuthkit.datamodel.TskData.DbType;
 
 /**
  * A per case Autopsy service that manages the addition of content and artifact
@@ -45,9 +53,201 @@ import org.sleuthkit.datamodel.TskCoreException;
 public class TagsManager implements Closeable {
 
     private static final Logger LOGGER = Logger.getLogger(TagsManager.class.getName());
-    @NbBundle.Messages("TagsManager.predefTagNames.bookmark.text=Bookmark")
-    private static final Set<String> STANDARD_TAG_DISPLAY_NAMES = new HashSet<>(Arrays.asList(Bundle.TagsManager_predefTagNames_bookmark_text()));
     private final SleuthkitCase caseDb;
+
+    private static String DEFAULT_TAG_SET_NAME = "Project VIC";
+
+    private static final Object lock = new Object();
+
+    static {
+
+        //Create the contentviewer tags table if the current case does not 
+        //have the table present
+        Case.addEventTypeSubscriber(EnumSet.of(Case.Events.CURRENT_CASE), evt -> {
+            if (evt.getNewValue() != null) {
+                Case currentCase = (Case) evt.getNewValue();
+                try {
+                    CaseDbAccessManager caseDb = currentCase.getSleuthkitCase().getCaseDbAccessManager();
+                    if (caseDb.tableExists(ContentViewerTagManager.TABLE_NAME)) {
+                        return;
+                    }
+
+                    if (currentCase.getSleuthkitCase().getDatabaseType().equals(DbType.SQLITE)) {
+                        caseDb.createTable(ContentViewerTagManager.TABLE_NAME, ContentViewerTagManager.TABLE_SCHEMA_SQLITE);
+                    } else if (currentCase.getSleuthkitCase().getDatabaseType().equals(DbType.POSTGRESQL)) {
+                        caseDb.createTable(ContentViewerTagManager.TABLE_NAME, ContentViewerTagManager.TABLE_SCHEMA_POSTGRESQL);
+                    }
+                } catch (TskCoreException ex) {
+                    LOGGER.log(Level.SEVERE,
+                            String.format("Unable to create the %s table for image tag storage.",
+                                    ContentViewerTagManager.TABLE_NAME), ex);
+                }
+            }
+        });
+    }
+
+    /**
+     * Tests whether or not a given tag display name contains an illegal
+     * character.
+     *
+     * @param tagDisplayName Display name of a tag.
+     *
+     * @return True or false.
+     */
+    public static boolean containsIllegalCharacters(String tagDisplayName) {
+        return (tagDisplayName.contains("\\")
+                || tagDisplayName.contains(":")
+                || tagDisplayName.contains("*")
+                || tagDisplayName.contains("?")
+                || tagDisplayName.contains("\"")
+                || tagDisplayName.contains("<")
+                || tagDisplayName.contains(">")
+                || tagDisplayName.contains("|")
+                || tagDisplayName.contains(",")
+                || tagDisplayName.contains(";"));
+
+    }
+
+    @NbBundle.Messages({"TagsManager.notableTagEnding.text= (Notable)"})
+    /**
+     * Get String of text which is used to label tags as notable to the user.
+     *
+     * @return Bundle message TagsManager.notableTagEnding.text
+     */
+    public static String getNotableTagLabel() {
+        return Bundle.TagsManager_notableTagEnding_text();
+    }
+
+    /**
+     * Gets the set of display names of the currently available tag types. This
+     * includes the display names of the standard tag types, the current user's
+     * custom tag types, and the tags in the case database of the current case
+     * (if there is a current case).
+     *
+     * @return A set, possibly empty, of tag type display names.
+     *
+     * @throws TskCoreException If there is a current case and there is an error
+     *                          querying the case database for tag types.
+     */
+    public static Set<String> getTagDisplayNames() throws TskCoreException {
+        Set<String> tagDisplayNames = new HashSet<>();
+        Set<TagNameDefinition> customNames = TagNameDefinition.getTagNameDefinitions();
+        customNames.forEach((tagType) -> {
+            tagDisplayNames.add(tagType.getDisplayName());
+        });
+        try {
+            TagsManager tagsManager = Case.getCurrentCaseThrows().getServices().getTagsManager();
+            for (TagName tagName : tagsManager.getAllTagNames()) {
+                tagDisplayNames.add(tagName.getDisplayName());
+            }
+        } catch (NoCurrentCaseException ignored) {
+            /*
+             * No current case, nothing more to add to the set.
+             */
+        }
+        return tagDisplayNames;
+    }
+
+    /**
+     * Gets the set of display names of notable (TskData.FileKnown.BAD) tag
+     * types. If a case is not open the list will only include only the user
+     * defined custom tags. Otherwise the list will include all notable tags.
+     *
+     * @return
+     */
+    public static List<String> getNotableTagDisplayNames() {
+        List<String> tagDisplayNames = new ArrayList<>();
+        for (TagNameDefinition tagDef : TagNameDefinition.getTagNameDefinitions()) {
+            if (tagDef.getKnownStatus() == TskData.FileKnown.BAD) {
+                tagDisplayNames.add(tagDef.getDisplayName());
+            }
+        }
+
+        try {
+            TagsManager tagsManager = Case.getCurrentCaseThrows().getServices().getTagsManager();
+            for (TagName tagName : tagsManager.getAllTagNames()) {
+                if (tagName.getKnownStatus() == TskData.FileKnown.BAD
+                        && !tagDisplayNames.contains(tagName.getDisplayName())) {
+                    tagDisplayNames.add(tagName.getDisplayName());
+                }
+            }
+        } catch (NoCurrentCaseException ignored) {
+            /*
+             * No current case, nothing more to add to the set.
+             */
+        } catch (TskCoreException ex) {
+            LOGGER.log(Level.SEVERE, "Failed to get list of TagNames from TagsManager.", ex);
+        }
+        return tagDisplayNames;
+    }
+
+    /**
+     * Returns a list of names of standard/predefined tags
+     *
+     * @return list of predefined tag names
+     */
+    public static List<String> getStandardTagNames() {
+        List<String> tagList = new ArrayList<>();
+
+        for (TagNameDefinition tagNameDef : TagNameDefinition.getStandardTagNameDefinitions()) {
+            tagList.add(tagNameDef.getDisplayName());
+        }
+
+        try {
+            List<TagSet> tagSetList = Case.getCurrentCaseThrows().getSleuthkitCase().getTaggingManager().getTagSets();
+            for (TagSet tagSet : tagSetList) {
+                if (tagSet.getName().equals(DEFAULT_TAG_SET_NAME)) {
+                    for (TagName tagName : tagSet.getTagNames()) {
+                        tagList.add(tagName.getDisplayName());
+                    }
+                }
+            }
+        } catch (NoCurrentCaseException | TskCoreException ex) {
+            LOGGER.log(Level.SEVERE, "Failed to get Project VIC tags from the database.", ex);
+        }
+
+        return tagList;
+    }
+
+    /**
+     * Returns the bookmark tag display string.
+     *
+     * @return
+     */
+    public static String getBookmarkTagDisplayName() {
+        return TagNameDefinition.getBookmarkTagDisplayName();
+    }
+
+    /**
+     * Returns the Follow Up tag display string.
+     *
+     * @return
+     */
+    public static String getFollowUpTagDisplayName() {
+        return TagNameDefinition.getFollowUpTagDisplayName();
+    }
+
+    /**
+     * Returns the Notable tag display string.
+     *
+     * @return
+     */
+    public static String getNotableTagDisplayName() {
+        return TagNameDefinition.getNotableTagDisplayName();
+    }
+
+    /**
+     * Creates a new TagSetDefinition file.
+     *
+     * @param tagSetDef The tag set definition.
+     *
+     * @throws IOException
+     */
+    public static void addTagSetDefinition(TagSetDefinition tagSetDef) throws IOException {
+        synchronized (lock) {
+            TagSetDefinition.writeTagSetDefinition(tagSetDef);
+        }
+    }
 
     /**
      * Constructs a per case Autopsy service that manages the addition of
@@ -57,6 +257,75 @@ public class TagsManager implements Closeable {
      */
     TagsManager(SleuthkitCase caseDb) {
         this.caseDb = caseDb;
+
+        // Add standard tags and  the Project VIC default tag set and tags.
+        TaggingManager taggingMgr = caseDb.getTaggingManager();
+        try {
+            List<TagSet> setList = taggingMgr.getTagSets();
+            if (setList.isEmpty()) {
+                for (TagNameDefinition def : TagNameDefinition.getStandardTagNameDefinitions()) {
+                    caseDb.addOrUpdateTagName(def.getDisplayName(), def.getDescription(), def.getColor(), def.getKnownStatus());
+                }
+                //Assume new case and add tag sets
+                for (TagSetDefinition setDef : TagSetDefinition.readTagSetDefinitions()) {
+                    List<TagName> tagNameList = new ArrayList<>();
+                    for (TagNameDefinition tagNameDef : setDef.getTagNameDefinitions()) {
+                        tagNameList.add(caseDb.addOrUpdateTagName(tagNameDef.getDisplayName(), tagNameDef.getDescription(), tagNameDef.getColor(), tagNameDef.getKnownStatus()));
+                    }
+
+                    if (!tagNameList.isEmpty()) {
+                        taggingMgr.addTagSet(setDef.getName(), tagNameList);
+                    }
+                }
+            }
+        } catch (TskCoreException ex) {
+            LOGGER.log(Level.SEVERE, "Error updating standard tag name and tag set definitions", ex);
+        } catch (IOException ex) {
+            LOGGER.log(Level.SEVERE, "Error loading tag set JSON files", ex);
+        }
+
+        for (TagNameDefinition tagName : TagNameDefinition.getTagNameDefinitions()) {
+            tagName.saveToCase(caseDb);
+        }
+    }
+
+    /**
+     * Get a list of all tag sets currently in the case database.
+     *
+     * @return A list, possibly empty, of TagSet objects.
+     *
+     * @throws TskCoreException
+     */
+    public List<TagSet> getAllTagSets() throws TskCoreException {
+        return caseDb.getTaggingManager().getTagSets();
+    }
+
+    /**
+     * Gets the tag set a tag name (tag definition) belongs to, if any.
+     *
+     * @param tagName The tag name.
+     *
+     * @return A TagSet object or null.
+     *
+     * @throws TskCoreException If there is an error querying the case database.
+     */
+    public TagSet getTagSet(TagName tagName) throws TskCoreException {
+        return caseDb.getTaggingManager().getTagSet(tagName);        
+    }
+
+    /**
+     * Add a new TagSet to the case database. Tags will be ranked in the order
+     * which they are passed to this method.
+     *
+     * @param name        Tag set name.
+     * @param tagNameList List of TagName in rank order.
+     *
+     * @return A new TagSet object.
+     *
+     * @throws TskCoreException
+     */
+    public TagSet addTagSet(String name, List<TagName> tagNameList) throws TskCoreException {
+        return caseDb.getTaggingManager().addTagSet(name, tagNameList);
     }
 
     /**
@@ -83,40 +352,92 @@ public class TagsManager implements Closeable {
     }
 
     /**
-     * Gets a map of tag display names to tag name entries in the case database.
-     * It has keys for the display names of the standard tag types, the current
-     * user's custom tag types, and the tags in the case database. The value for
-     * a given key will be null if the corresponding tag type is defined, but a
-     * tag name entry has not yet added to the case database. In that case,
-     * addTagName may be called to add the tag name entry.
+     * Gets a list of all tag names currently in use in the case database for
+     * tagging content or artifacts by the specified user.
      *
-     * @return A map of tag display names to possibly null TagName object
-     *         references.
+     * @param userName - the user name that you want to get tags for
+     *
+     * @return A list, possibly empty, of TagName objects.
+     *
+     * @throws TskCoreException If there is an error querying the case database.
+     */
+    public List<TagName> getTagNamesInUseForUser(String userName) throws TskCoreException {
+        Set<TagName> tagNameSet = new HashSet<>();
+        List<BlackboardArtifactTag> artifactTags = caseDb.getAllBlackboardArtifactTags();
+        for (BlackboardArtifactTag tag : artifactTags) {
+            if (tag.getUserName().equals(userName)) {
+                tagNameSet.add(tag.getName());
+            }
+        }
+        List<ContentTag> contentTags = caseDb.getAllContentTags();
+        for (ContentTag tag : contentTags) {
+            if (tag.getUserName().equals(userName)) {
+                tagNameSet.add(tag.getName());
+            }
+        }
+        return new ArrayList<>(tagNameSet);
+    }
+
+    /**
+     * Selects all of the rows from the tag_names table in the case database for
+     * which there is at least one matching row in the content_tags or
+     * blackboard_artifact_tags tables, for the given data source object id.
+     *
+     * @param dsObjId data source object id
+     *
+     * @return A list, possibly empty, of TagName data transfer objects (DTOs)
+     *         for the rows.
+     *
+     * @throws TskCoreException
+     */
+    public List<TagName> getTagNamesInUse(long dsObjId) throws TskCoreException {
+        return caseDb.getTagNamesInUse(dsObjId);
+    }
+
+    /**
+     * Selects all of the rows from the tag_names table in the case database for
+     * which there is at least one matching row in the content_tags or
+     * blackboard_artifact_tags tables, for the given data source object id and
+     * user.
+     *
+     * @param dsObjId  data source object id
+     * @param userName - the user name that you want to get tags for
+     *
+     * @return A list, possibly empty, of TagName data transfer objects (DTOs)
+     *         for the rows.
+     *
+     * @throws TskCoreException
+     */
+    public List<TagName> getTagNamesInUseForUser(long dsObjId, String userName) throws TskCoreException {
+        Set<TagName> tagNameSet = new HashSet<>();
+        List<BlackboardArtifactTag> artifactTags = caseDb.getAllBlackboardArtifactTags();
+        for (BlackboardArtifactTag tag : artifactTags) {
+            if (tag.getUserName().equals(userName) && tag.getArtifact().getDataSource().getId() == dsObjId) {
+                tagNameSet.add(tag.getName());
+            }
+        }
+        List<ContentTag> contentTags = caseDb.getAllContentTags();
+        for (ContentTag tag : contentTags) {
+            if (tag.getUserName().equals(userName) && tag.getContent().getDataSource().getId() == dsObjId) {
+                tagNameSet.add(tag.getName());
+            }
+        }
+        return new ArrayList<>(tagNameSet);
+    }
+
+    /**
+     * Gets a map of tag display names to tag name entries in the case database.
+     *
+     * @return A map of tag display names to TagName object references.
      *
      * @throws TskCoreException if there is an error querying the case database.
      */
-    public synchronized Map<String, TagName> getDisplayNamesToTagNamesMap() throws TskCoreException {
-        /**
-         * Order is important here. The keys (display names) for the current
-         * user's custom tag types are added to the map first, with null TagName
-         * values. If tag name entries exist for those keys, loading of the tag
-         * names from the database supplies the missing values. Standard tag
-         * names are added during the initialization of the case database.
-         *
-         * Note that creating the map on demand increases the probability that
-         * the display names of newly added custom tag types and the display
-         * names of tags added to a multi-user case by other users appear in the
-         * map.
-         */
+    public Map<String, TagName> getDisplayNamesToTagNamesMap() throws TskCoreException {
         Map<String, TagName> tagNames = new HashMap<>();
-        Set<TagNameDefiniton> customTypes = TagNameDefiniton.getTagNameDefinitions();
-        for (TagNameDefiniton tagType : customTypes) {
-            tagNames.put(tagType.getDisplayName(), null);
-        }
         for (TagName tagName : caseDb.getAllTagNames()) {
             tagNames.put(tagName.getDisplayName(), tagName);
         }
-        return new HashMap<>(tagNames);
+        return tagNames;
     }
 
     /**
@@ -133,8 +454,8 @@ public class TagsManager implements Closeable {
      * @throws TskCoreException              If there is an error adding the tag
      *                                       name to the case database.
      */
-    public synchronized TagName addTagName(String displayName) throws TagNameAlreadyExistsException, TskCoreException {
-        return addTagName(displayName, "", TagName.HTML_COLOR.NONE);
+    public TagName addTagName(String displayName) throws TagNameAlreadyExistsException, TskCoreException {
+        return addTagName(displayName, "", TagName.HTML_COLOR.NONE, TskData.FileKnown.UNKNOWN);
     }
 
     /**
@@ -152,8 +473,8 @@ public class TagsManager implements Closeable {
      * @throws TskCoreException              If there is an error adding the tag
      *                                       name to the case database.
      */
-    public synchronized TagName addTagName(String displayName, String description) throws TagNameAlreadyExistsException, TskCoreException {
-        return addTagName(displayName, description, TagName.HTML_COLOR.NONE);
+    public TagName addTagName(String displayName, String description) throws TagNameAlreadyExistsException, TskCoreException {
+        return addTagName(displayName, description, TagName.HTML_COLOR.NONE, TskData.FileKnown.UNKNOWN);
     }
 
     /**
@@ -171,23 +492,44 @@ public class TagsManager implements Closeable {
      * @throws TskCoreException              If there is an error adding the tag
      *                                       name to the case database.
      */
-    public synchronized TagName addTagName(String displayName, String description, TagName.HTML_COLOR color) throws TagNameAlreadyExistsException, TskCoreException {
-        try {
-            TagName tagName = caseDb.addTagName(displayName, description, color);
-            if (!STANDARD_TAG_DISPLAY_NAMES.contains(displayName)) {
-                Set<TagNameDefiniton> customTypes = TagNameDefiniton.getTagNameDefinitions();
-                customTypes.add(new TagNameDefiniton(displayName, description, color));
-                TagNameDefiniton.setTagNameDefinitions(customTypes);
-            }
-            return tagName;
-        } catch (TskCoreException ex) {
-            List<TagName> existingTagNames = caseDb.getAllTagNames();
-            for (TagName tagName : existingTagNames) {
-                if (tagName.getDisplayName().equals(displayName)) {
-                    throw new TagNameAlreadyExistsException();
+    public TagName addTagName(String displayName, String description, TagName.HTML_COLOR color) throws TagNameAlreadyExistsException, TskCoreException {
+        return addTagName(displayName, description, color, TskData.FileKnown.UNKNOWN);
+    }
+
+    /**
+     * Adds a tag name entry to the case database and adds a corresponding tag
+     * type to the current user's custom tag types.
+     *
+     * @param displayName The display name for the new tag type.
+     * @param description The description for the new tag type.
+     * @param color       The color to associate with the new tag type.
+     * @param knownStatus The knownStatus to be used for the tag when
+     *                    correlating on the tagged item
+     *
+     * @return A TagName object that can be used to add instances of the tag
+     *         type to the case database.
+     *
+     * @throws TagNameAlreadyExistsException If the tag name already exists.
+     * @throws TskCoreException              If there is an error adding the tag
+     *                                       name to the case database.
+     */
+    public TagName addTagName(String displayName, String description, TagName.HTML_COLOR color, TskData.FileKnown knownStatus) throws TagNameAlreadyExistsException, TskCoreException {
+        synchronized (lock) {
+            try {
+                TagName tagName = caseDb.addOrUpdateTagName(displayName, description, color, knownStatus);
+                Set<TagNameDefinition> customTypes = TagNameDefinition.getTagNameDefinitions();
+                customTypes.add(new TagNameDefinition(displayName, description, color, knownStatus));
+                TagNameDefinition.setTagNameDefinitions(customTypes);
+                return tagName;
+            } catch (TskCoreException ex) {
+                List<TagName> existingTagNames = caseDb.getAllTagNames();
+                for (TagName tagName : existingTagNames) {
+                    if (tagName.getDisplayName().equals(displayName)) {
+                        throw new TagNameAlreadyExistsException();
+                    }
                 }
+                throw ex;
             }
-            throw ex;
         }
     }
 
@@ -243,14 +585,16 @@ public class TagsManager implements Closeable {
      *                          database.
      */
     public ContentTag addContentTag(Content content, TagName tagName, String comment, long beginByteOffset, long endByteOffset) throws TskCoreException {
-        ContentTag tag;
-        tag = caseDb.addContentTag(content, tagName, comment, beginByteOffset, endByteOffset);
+        TaggingManager.ContentTagChange tagChange = caseDb.getTaggingManager().addContentTag(content, tagName, comment, beginByteOffset, endByteOffset);
         try {
-            Case.getCurrentCase().notifyContentTagAdded(tag);
-        } catch (IllegalStateException ex) {
-            LOGGER.log(Level.SEVERE, "Added a tag to a closed case", ex);
+            Case currentCase = Case.getCurrentCaseThrows();
+
+            currentCase.notifyContentTagAdded(tagChange.getAddedTag(), tagChange.getRemovedTags().isEmpty() ? null : tagChange.getRemovedTags());
+
+        } catch (NoCurrentCaseException ex) {
+            throw new TskCoreException("Added a tag to a closed case", ex);
         }
-        return tag;
+        return tagChange.getAddedTag();
     }
 
     /**
@@ -264,9 +608,9 @@ public class TagsManager implements Closeable {
     public void deleteContentTag(ContentTag tag) throws TskCoreException {
         caseDb.deleteContentTag(tag);
         try {
-            Case.getCurrentCase().notifyContentTagDeleted(tag);
-        } catch (IllegalStateException ex) {
-            LOGGER.log(Level.SEVERE, "Deleted a tag from a closed case", ex);
+            Case.getCurrentCaseThrows().notifyContentTagDeleted(tag);
+        } catch (NoCurrentCaseException ex) {
+            throw new TskCoreException("Deleted a tag from a closed case", ex);
         }
     }
 
@@ -278,7 +622,7 @@ public class TagsManager implements Closeable {
      * @throws TskCoreException If there is an error getting the tags from the
      *                          case database.
      */
-    public synchronized List<ContentTag> getAllContentTags() throws TskCoreException {
+    public List<ContentTag> getAllContentTags() throws TskCoreException {
         return caseDb.getAllContentTags();
     }
 
@@ -294,8 +638,79 @@ public class TagsManager implements Closeable {
      * @throws TskCoreException If there is an error getting the tags count from
      *                          the case database.
      */
-    public synchronized long getContentTagsCountByTagName(TagName tagName) throws TskCoreException {
+    public long getContentTagsCountByTagName(TagName tagName) throws TskCoreException {
         return caseDb.getContentTagsCountByTagName(tagName);
+    }
+
+    /**
+     * Gets content tags count by tag name for the specified user.
+     *
+     * @param tagName  The representation of the desired tag type in the case
+     *                 database, which can be obtained by calling getTagNames
+     *                 and/or addTagName.
+     * @param userName - the user name that you want to get tags for
+     *
+     * @return A count of the content tags with the specified tag name for the
+     *         specified user.
+     *
+     * @throws TskCoreException If there is an error getting the tags count from
+     *                          the case database.
+     */
+    public long getContentTagsCountByTagNameForUser(TagName tagName, String userName) throws TskCoreException {
+        long count = 0;
+        List<ContentTag> contentTags = getContentTagsByTagName(tagName);
+        for (ContentTag tag : contentTags) {
+            if (userName.equals(tag.getUserName())) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * Gets content tags count by tag name, for the given data source
+     *
+     * @param tagName The representation of the desired tag type in the case
+     *                database, which can be obtained by calling getTagNames
+     *                and/or addTagName.
+     *
+     * @param dsObjId data source object id
+     *
+     * @return A count of the content tags with the specified tag name, and for
+     *         the given data source
+     *
+     * @throws TskCoreException If there is an error getting the tags count from
+     *                          the case database.
+     */
+    public long getContentTagsCountByTagName(TagName tagName, long dsObjId) throws TskCoreException {
+        return caseDb.getContentTagsCountByTagName(tagName, dsObjId);
+    }
+
+    /**
+     * Gets content tags count by tag name, for the given data source and user
+     *
+     * @param tagName  The representation of the desired tag type in the case
+     *                 database, which can be obtained by calling getTagNames
+     *                 and/or addTagName.
+     *
+     * @param dsObjId  data source object id
+     * @param userName - the user name that you want to get tags for
+     *
+     * @return A count of the content tags with the specified tag name, and for
+     *         the given data source and user
+     *
+     * @throws TskCoreException If there is an error getting the tags count from
+     *                          the case database.
+     */
+    public long getContentTagsCountByTagNameForUser(TagName tagName, long dsObjId, String userName) throws TskCoreException {
+        long count = 0;
+        List<ContentTag> contentTags = getContentTagsByTagName(tagName, dsObjId);
+        for (ContentTag tag : contentTags) {
+            if (userName.equals(tag.getUserName())) {
+                count++;
+            }
+        }
+        return count;
     }
 
     /**
@@ -308,7 +723,7 @@ public class TagsManager implements Closeable {
      * @throws TskCoreException If there is an error getting the tag from the
      *                          case database.
      */
-    public synchronized ContentTag getContentTagByTagID(long tagId) throws TskCoreException {
+    public ContentTag getContentTagByTagID(long tagId) throws TskCoreException {
         return caseDb.getContentTagByID(tagId);
     }
 
@@ -323,8 +738,25 @@ public class TagsManager implements Closeable {
      * @throws TskCoreException If there is an error getting the tags from the
      *                          case database.
      */
-    public synchronized List<ContentTag> getContentTagsByTagName(TagName tagName) throws TskCoreException {
+    public List<ContentTag> getContentTagsByTagName(TagName tagName) throws TskCoreException {
         return caseDb.getContentTagsByTagName(tagName);
+    }
+
+    /**
+     * Gets content tags by tag name, for the given data source.
+     *
+     * @param tagName The tag name of interest.
+     *
+     * @param dsObjId data source object id
+     *
+     * @return A list, possibly empty, of the content tags with the specified
+     *         tag name, and for the given data source.
+     *
+     * @throws TskCoreException If there is an error getting the tags from the
+     *                          case database.
+     */
+    public List<ContentTag> getContentTagsByTagName(TagName tagName, long dsObjId) throws TskCoreException {
+        return caseDb.getContentTagsByTagName(tagName, dsObjId);
     }
 
     /**
@@ -338,7 +770,7 @@ public class TagsManager implements Closeable {
      * @throws TskCoreException If there is an error getting the tags from the
      *                          case database.
      */
-    public synchronized List<ContentTag> getContentTagsByContent(Content content) throws TskCoreException {
+    public List<ContentTag> getContentTagsByContent(Content content) throws TskCoreException {
         return caseDb.getContentTagsByContent(content);
     }
 
@@ -355,7 +787,7 @@ public class TagsManager implements Closeable {
      * @throws TskCoreException If there is an error adding the tag to the case
      *                          database.
      */
-    public synchronized BlackboardArtifactTag addBlackboardArtifactTag(BlackboardArtifact artifact, TagName tagName) throws TskCoreException {
+    public BlackboardArtifactTag addBlackboardArtifactTag(BlackboardArtifact artifact, TagName tagName) throws TskCoreException {
         return addBlackboardArtifactTag(artifact, tagName, "");
     }
 
@@ -373,14 +805,15 @@ public class TagsManager implements Closeable {
      * @throws TskCoreException If there is an error adding the tag to the case
      *                          database.
      */
-    public synchronized BlackboardArtifactTag addBlackboardArtifactTag(BlackboardArtifact artifact, TagName tagName, String comment) throws TskCoreException {
-        BlackboardArtifactTag tag = caseDb.addBlackboardArtifactTag(artifact, tagName, comment);
+    public BlackboardArtifactTag addBlackboardArtifactTag(BlackboardArtifact artifact, TagName tagName, String comment) throws TskCoreException {
+        TaggingManager.BlackboardArtifactTagChange tagChange = caseDb.getTaggingManager().addArtifactTag(artifact, tagName, comment);
         try {
-            Case.getCurrentCase().notifyBlackBoardArtifactTagAdded(tag);
-        } catch (IllegalStateException ex) {
-            LOGGER.log(Level.SEVERE, "Added a tag to a closed case", ex);
+            Case currentCase = Case.getCurrentCaseThrows();
+            currentCase.notifyBlackBoardArtifactTagAdded(tagChange.getAddedTag(), tagChange.getRemovedTags().isEmpty() ? null : tagChange.getRemovedTags());
+        } catch (NoCurrentCaseException ex) {
+            throw new TskCoreException("Added a tag to a closed case", ex);
         }
-        return tag;
+        return tagChange.getAddedTag();
     }
 
     /**
@@ -391,12 +824,12 @@ public class TagsManager implements Closeable {
      * @throws TskCoreException If there is an error deleting the tag from the
      *                          case database.
      */
-    public synchronized void deleteBlackboardArtifactTag(BlackboardArtifactTag tag) throws TskCoreException {
+    public void deleteBlackboardArtifactTag(BlackboardArtifactTag tag) throws TskCoreException {
         caseDb.deleteBlackboardArtifactTag(tag);
         try {
-            Case.getCurrentCase().notifyBlackBoardArtifactTagDeleted(tag);
-        } catch (IllegalStateException ex) {
-            LOGGER.log(Level.SEVERE, "Deleted a tag from a closed case", ex);
+            Case.getCurrentCaseThrows().notifyBlackBoardArtifactTagDeleted(tag);
+        } catch (NoCurrentCaseException ex) {
+            throw new TskCoreException("Deleted a tag from a closed case", ex);
         }
     }
 
@@ -408,7 +841,7 @@ public class TagsManager implements Closeable {
      * @throws TskCoreException If there is an error getting the tags from the
      *                          case database.
      */
-    public synchronized List<BlackboardArtifactTag> getAllBlackboardArtifactTags() throws TskCoreException {
+    public List<BlackboardArtifactTag> getAllBlackboardArtifactTags() throws TskCoreException {
         return caseDb.getAllBlackboardArtifactTags();
     }
 
@@ -424,8 +857,78 @@ public class TagsManager implements Closeable {
      * @throws TskCoreException If there is an error getting the tags count from
      *                          the case database.
      */
-    public synchronized long getBlackboardArtifactTagsCountByTagName(TagName tagName) throws TskCoreException {
+    public long getBlackboardArtifactTagsCountByTagName(TagName tagName) throws TskCoreException {
         return caseDb.getBlackboardArtifactTagsCountByTagName(tagName);
+    }
+
+    /**
+     * Gets an artifact tags count by tag name for a specific user.
+     *
+     * @param tagName  The representation of the desired tag type in the case
+     *                 database, which can be obtained by calling getTagNames
+     *                 and/or addTagName.
+     * @param userName - the user name that you want to get tags for
+     *
+     * @return A count of the artifact tags with the specified tag name for the
+     *         specified user.
+     *
+     * @throws TskCoreException If there is an error getting the tags count from
+     *                          the case database.
+     */
+    public long getBlackboardArtifactTagsCountByTagNameForUser(TagName tagName, String userName) throws TskCoreException {
+        long count = 0;
+        List<BlackboardArtifactTag> artifactTags = getBlackboardArtifactTagsByTagName(tagName);
+        for (BlackboardArtifactTag tag : artifactTags) {
+            if (userName.equals(tag.getUserName())) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * Gets an artifact tags count by tag name, for the given data source.
+     *
+     * @param tagName The representation of the desired tag type in the case
+     *                database, which can be obtained by calling getTagNames
+     *                and/or addTagName.
+     * @param dsObjId data source object id
+     *
+     * @return A count of the artifact tags with the specified tag name, for the
+     *         given data source.
+     *
+     * @throws TskCoreException If there is an error getting the tags count from
+     *                          the case database.
+     */
+    public long getBlackboardArtifactTagsCountByTagName(TagName tagName, long dsObjId) throws TskCoreException {
+        return caseDb.getBlackboardArtifactTagsCountByTagName(tagName, dsObjId);
+    }
+
+    /**
+     * Gets an artifact tags count by tag name, for the given data source and
+     * user.
+     *
+     * @param tagName  The representation of the desired tag type in the case
+     *                 database, which can be obtained by calling getTagNames
+     *                 and/or addTagName.
+     * @param dsObjId  data source object id
+     * @param userName - the user name that you want to get tags for
+     *
+     * @return A count of the artifact tags with the specified tag name, for the
+     *         given data source and user.
+     *
+     * @throws TskCoreException If there is an error getting the tags count from
+     *                          the case database.
+     */
+    public long getBlackboardArtifactTagsCountByTagNameForUser(TagName tagName, long dsObjId, String userName) throws TskCoreException {
+        long count = 0;
+        List<BlackboardArtifactTag> artifactTags = getBlackboardArtifactTagsByTagName(tagName, dsObjId);
+        for (BlackboardArtifactTag tag : artifactTags) {
+            if (userName.equals(tag.getUserName())) {
+                count++;
+            }
+        }
+        return count;
     }
 
     /**
@@ -438,7 +941,7 @@ public class TagsManager implements Closeable {
      * @throws TskCoreException If there is an error getting the tag from the
      *                          case database.
      */
-    public synchronized BlackboardArtifactTag getBlackboardArtifactTagByTagID(long tagId) throws TskCoreException {
+    public BlackboardArtifactTag getBlackboardArtifactTagByTagID(long tagId) throws TskCoreException {
         return caseDb.getBlackboardArtifactTagByID(tagId);
     }
 
@@ -455,8 +958,26 @@ public class TagsManager implements Closeable {
      * @throws TskCoreException If there is an error getting the tags from the
      *                          case database.
      */
-    public synchronized List<BlackboardArtifactTag> getBlackboardArtifactTagsByTagName(TagName tagName) throws TskCoreException {
+    public List<BlackboardArtifactTag> getBlackboardArtifactTagsByTagName(TagName tagName) throws TskCoreException {
         return caseDb.getBlackboardArtifactTagsByTagName(tagName);
+    }
+
+    /**
+     * Gets artifact tags by tag name, for specified data source.
+     *
+     * @param tagName The representation of the desired tag type in the case
+     *                database, which can be obtained by calling getTagNames
+     *                and/or addTagName.
+     * @param dsObjId data source object id
+     *
+     * @return A list, possibly empty, of the artifact tags with the specified
+     *         tag name, for the specified data source.
+     *
+     * @throws TskCoreException If there is an error getting the tags from the
+     *                          case database.
+     */
+    public List<BlackboardArtifactTag> getBlackboardArtifactTagsByTagName(TagName tagName, long dsObjId) throws TskCoreException {
+        return caseDb.getBlackboardArtifactTagsByTagName(tagName, dsObjId);
     }
 
     /**
@@ -470,30 +991,8 @@ public class TagsManager implements Closeable {
      * @throws TskCoreException If there is an error getting the tags from the
      *                          case database.
      */
-    public synchronized List<BlackboardArtifactTag> getBlackboardArtifactTagsByArtifact(BlackboardArtifact artifact) throws TskCoreException {
+    public List<BlackboardArtifactTag> getBlackboardArtifactTagsByArtifact(BlackboardArtifact artifact) throws TskCoreException {
         return caseDb.getBlackboardArtifactTagsByArtifact(artifact);
-    }
-
-    /**
-     * Returns true if the tag display name contains an illegal character. Used
-     * after a tag display name is retrieved from user input.
-     *
-     * @param content Display name of the tag being added.
-     *
-     * @return boolean indicating whether the name has an invalid character.
-     */
-    public static boolean containsIllegalCharacters(String content) {
-        return (content.contains("\\")
-                || content.contains(":")
-                || content.contains("*")
-                || content.contains("?")
-                || content.contains("\"")
-                || content.contains("<")
-                || content.contains(">")
-                || content.contains("|")
-                || content.contains(",")
-                || content.contains(";"));
-
     }
 
     /**
@@ -515,7 +1014,7 @@ public class TagsManager implements Closeable {
      * @deprecated Not reliable for multi-user cases.
      */
     @Deprecated
-    public synchronized boolean tagNameExists(String tagDisplayName) {
+    public boolean tagNameExists(String tagDisplayName) {
         try {
             Map<String, TagName> tagNames = getDisplayNamesToTagNamesMap();
             return tagNames.containsKey(tagDisplayName) && (tagNames.get(tagDisplayName) != null);
@@ -531,8 +1030,9 @@ public class TagsManager implements Closeable {
      * @throws IOException If there is a problem closing the tags manager.
      * @deprecated Tags manager clients should not close the tags manager.
      */
-    @Override
     @Deprecated
-    public synchronized void close() throws IOException {
+    @Override
+    public void close() throws IOException {
     }
+
 }

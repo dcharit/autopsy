@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2011-2014 Basis Technology Corp.
+ * Copyright 2011-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -42,9 +42,11 @@ import org.sleuthkit.datamodel.File;
 import org.sleuthkit.datamodel.Image;
 import org.sleuthkit.datamodel.LayoutFile;
 import org.sleuthkit.datamodel.LocalFile;
+import org.sleuthkit.datamodel.LocalDirectory;
 import org.sleuthkit.datamodel.ReadContentInputStream;
+import org.sleuthkit.datamodel.ReadContentInputStream.ReadContentInputStreamException;
 import org.sleuthkit.datamodel.SlackFile;
-import org.sleuthkit.datamodel.TskException;
+import org.sleuthkit.datamodel.TskCoreException;
 import org.sleuthkit.datamodel.VirtualDirectory;
 
 /**
@@ -68,18 +70,20 @@ public final class ContentUtils {
         });
     }
 
-    // don't instantiate
+    /**
+     * Don't instantiate
+     */
     private ContentUtils() {
         throw new AssertionError();
     }
 
     /**
-     * Convert epoch seconds to a string value in the given time zone
+     * Convert epoch seconds to a string value in the given time zone.
      *
-     * @param epochSeconds
-     * @param tzone
+     * @param epochSeconds Epoch seconds
+     * @param tzone        Time zone
      *
-     * @return
+     * @return The time
      */
     public static String getStringTime(long epochSeconds, TimeZone tzone) {
         String time = "0000-00-00 00:00:00";
@@ -92,6 +96,14 @@ public final class ContentUtils {
         return time;
     }
 
+    /**
+     * Convert epoch seconds to a string value (ISO8601) in the given time zone.
+     *
+     * @param epochSeconds Epoch seconds
+     * @param tzone        Time zone
+     *
+     * @return The time
+     */
     public static String getStringTimeISO8601(long epochSeconds, TimeZone tzone) {
         String time = "0000-00-00T00:00:00Z"; //NON-NLS
         if (epochSeconds != 0) {
@@ -108,12 +120,12 @@ public final class ContentUtils {
      * Convert epoch seconds to a string value (convenience method)
      *
      * @param epochSeconds
-     * @param c
+     * @param content
      *
      * @return
      */
-    public static String getStringTime(long epochSeconds, Content c) {
-        return getStringTime(epochSeconds, getTimeZone(c));
+    public static String getStringTime(long epochSeconds, Content content) {
+        return getStringTime(epochSeconds, getTimeZone(content));
     }
 
     /**
@@ -129,13 +141,13 @@ public final class ContentUtils {
         return getStringTimeISO8601(epochSeconds, getTimeZone(c));
     }
 
-    public static TimeZone getTimeZone(Content c) {
+    public static TimeZone getTimeZone(Content content) {
 
         try {
             if (!shouldDisplayTimesInLocalTime()) {
-                return TimeZone.getTimeZone("GMT");
+                return TimeZone.getTimeZone(UserPreferences.getTimeZoneForDisplays());
             } else {
-                final Content dataSource = c.getDataSource();
+                final Content dataSource = content.getDataSource();
                 if ((dataSource != null) && (dataSource instanceof Image)) {
                     Image image = (Image) dataSource;
                     return TimeZone.getTimeZone(image.getTimeZone());
@@ -144,16 +156,27 @@ public final class ContentUtils {
                     return TimeZone.getDefault();
                 }
             }
-        } catch (TskException ex) {
+        } catch (TskCoreException ex) {
             return TimeZone.getDefault();
         }
     }
     private static final SystemNameVisitor systemName = new SystemNameVisitor();
 
+    /**
+     * Get system name from content using SystemNameVisitor.
+     *
+     * @param content The content object.
+     *
+     * @return The system name.
+     */
     public static String getSystemName(Content content) {
         return content.accept(systemName);
     }
 
+    /**
+     * Visitor designed to handle the system name (content name and ID
+     * appended).
+     */
     private static class SystemNameVisitor extends ContentVisitor.Default<String> {
 
         SystemNameVisitor() {
@@ -219,27 +242,37 @@ public final class ContentUtils {
         return totalRead;
     }
 
+    /**
+     * Write content to an output file.
+     *
+     * @param content    The Content object.
+     * @param outputFile The output file.
+     *
+     * @throws IOException If the file could not be written.
+     */
     public static void writeToFile(Content content, java.io.File outputFile) throws IOException {
         writeToFile(content, outputFile, null, null, false);
     }
-    
+
     /**
      * Reads all the data from any content object and writes (extracts) it to a
      * file, using a cancellation check instead of a Future object method.
-     * 
+     *
      * @param content     Any content object.
      * @param outputFile  Will be created if it doesn't exist, and overwritten
      *                    if it does
      * @param cancelCheck A function used to check if the file write process
      *                    should be terminated.
+     *
      * @return number of bytes extracted
+     *
      * @throws IOException if file could not be written
      */
     public static long writeToFile(Content content, java.io.File outputFile,
             Supplier<Boolean> cancelCheck) throws IOException {
         InputStream in = new ReadContentInputStream(content);
         long totalRead = 0;
-        
+
         try (FileOutputStream out = new FileOutputStream(outputFile, false)) {
             byte[] buffer = new byte[TO_FILE_BUFFER_SIZE];
             int len = in.read(buffer);
@@ -258,7 +291,67 @@ public final class ContentUtils {
     }
 
     /**
+     * Reads all the data from any content object and writes (extracts) it to a
+     * file, using a cancellation check instead of a Future object method.
+     *
+     * @param content     Any content object.
+     * @param outputFile  Will be created if it doesn't exist, and overwritten
+     *                    if it does
+     * @param cancelCheck A function used to check if the file write process
+     *                    should be terminated.
+     * @param startingOffset the starting offset to start reading the file
+     * @param endingOffset the ending offset to read of the file to write
+     *
+     * @return number of bytes extracted
+     *
+     * @throws IOException if file could not be written
+     */
+    public static long writeToFile(Content content, java.io.File outputFile,
+            Supplier<Boolean> cancelCheck, long startingOffset, long endingOffset) throws IOException {
+        
+        InputStream in = new ReadContentInputStream(content);
+        long totalRead = 0;
+        try (FileOutputStream out = new FileOutputStream(outputFile, false)) {
+            long offsetSkipped = in.skip(startingOffset); 
+            if (offsetSkipped != startingOffset) {
+                in.close();
+                throw new IOException(String.format("Skipping file to starting offset {0} was not successful only skipped to offset {1}.", startingOffset, offsetSkipped));            
+            }
+            byte[] buffer = new byte[TO_FILE_BUFFER_SIZE];
+            int len = in.read(buffer);
+            long writeFileLength = endingOffset - startingOffset;
+            writeFileLength = writeFileLength - TO_FILE_BUFFER_SIZE;
+            while (len != -1 && writeFileLength != 0) {
+                out.write(buffer, 0, len);
+                totalRead += len;
+                if (cancelCheck.get()) {
+                    break;
+                }
+                if (writeFileLength > TO_FILE_BUFFER_SIZE) {
+                    len = in.read(buffer);
+                    writeFileLength = writeFileLength - TO_FILE_BUFFER_SIZE;
+                } else {
+                    int writeLength = (int)writeFileLength;
+                    byte[] lastBuffer = new byte[writeLength];
+                    len = in.read(lastBuffer);
+                    out.write(lastBuffer, 0, len);
+                    totalRead += len;
+                    writeFileLength = 0;
+                }
+            }
+                
+        } finally {
+            in.close();
+        }
+        return totalRead;
+    }
+
+    /**
      * Helper to ignore the '.' and '..' directories
+     *
+     * @param dir the directory to check
+     *
+     * @return true if dir is a '.' or '..' directory, false otherwise
      */
     public static boolean isDotDirectory(AbstractFile dir) {
         String name = dir.getName();
@@ -310,61 +403,81 @@ public final class ContentUtils {
         }
 
         @Override
-        public Void visit(File f) {
+        public Void visit(File file) {
             try {
-                ContentUtils.writeToFile(f, dest, progress, worker, source);
+                ContentUtils.writeToFile(file, dest, progress, worker, source);
+            } catch (ReadContentInputStreamException ex) {
+                logger.log(Level.WARNING,
+                        String.format("Error reading file '%s' (id=%d).",
+                                file.getName(), file.getId()), ex); //NON-NLS
             } catch (IOException ex) {
                 logger.log(Level.SEVERE,
-                        "Trouble extracting file to " + dest.getAbsolutePath(), //NON-NLS
-                        ex);
+                        String.format("Error extracting file '%s' (id=%d) to '%s'.",
+                                file.getName(), file.getId(), dest.getAbsolutePath()), ex); //NON-NLS
             }
             return null;
         }
 
         @Override
-        public Void visit(LayoutFile f) {
+        public Void visit(LayoutFile file) {
             try {
-                ContentUtils.writeToFile(f, dest, progress, worker, source);
+                ContentUtils.writeToFile(file, dest, progress, worker, source);
+            } catch (ReadContentInputStreamException ex) {
+                logger.log(Level.WARNING,
+                        String.format("Error reading file '%s' (id=%d).",
+                                file.getName(), file.getId()), ex); //NON-NLS
             } catch (IOException ex) {
                 logger.log(Level.SEVERE,
-                        "Trouble extracting unallocated content file to " + dest.getAbsolutePath(), //NON-NLS
-                        ex);
+                        String.format("Error extracting unallocated content file '%s' (id=%d) to '%s'.",
+                                file.getName(), file.getId(), dest.getAbsolutePath()), ex); //NON-NLS
             }
             return null;
         }
 
         @Override
-        public Void visit(DerivedFile df) {
+        public Void visit(DerivedFile file) {
             try {
-                ContentUtils.writeToFile(df, dest, progress, worker, source);
+                ContentUtils.writeToFile(file, dest, progress, worker, source);
+            } catch (ReadContentInputStreamException ex) {
+                logger.log(Level.WARNING,
+                        String.format("Error reading file '%s' (id=%d).",
+                                file.getName(), file.getId()), ex); //NON-NLS
             } catch (IOException ex) {
                 logger.log(Level.SEVERE,
-                        "Error extracting derived file to " + dest.getAbsolutePath(), //NON-NLS
-                        ex);
+                        String.format("Error extracting derived file '%s' (id=%d) to '%s'.",
+                                file.getName(), file.getId(), dest.getAbsolutePath()), ex); //NON-NLS
             }
             return null;
         }
 
         @Override
-        public Void visit(LocalFile lf) {
+        public Void visit(LocalFile file) {
             try {
-                ContentUtils.writeToFile(lf, dest, progress, worker, source);
+                ContentUtils.writeToFile(file, dest, progress, worker, source);
+            } catch (ReadContentInputStreamException ex) {
+                logger.log(Level.WARNING,
+                        String.format("Error reading file '%s' (id=%d).",
+                                file.getName(), file.getId()), ex); //NON-NLS
             } catch (IOException ex) {
                 logger.log(Level.SEVERE,
-                        "Error extracting local file to " + dest.getAbsolutePath(), //NON-NLS
-                        ex);
+                        String.format("Error extracting local file '%s' (id=%d) to '%s'.",
+                                file.getName(), file.getId(), dest.getAbsolutePath()), ex); //NON-NLS
             }
             return null;
         }
-        
+
         @Override
-        public Void visit(SlackFile f) {
+        public Void visit(SlackFile file) {
             try {
-                ContentUtils.writeToFile(f, dest, progress, worker, source);
+                ContentUtils.writeToFile(file, dest, progress, worker, source);
+            } catch (ReadContentInputStreamException ex) {
+                logger.log(Level.WARNING,
+                        String.format("Error reading file '%s' (id=%d).",
+                                file.getName(), file.getId()), ex); //NON-NLS
             } catch (IOException ex) {
                 logger.log(Level.SEVERE,
-                        "Trouble extracting slack file to " + dest.getAbsolutePath(), //NON-NLS
-                        ex);
+                        String.format("Error extracting slack file '%s' (id=%d) to '%s'.",
+                                file.getName(), file.getId(), dest.getAbsolutePath()), ex); //NON-NLS
             }
             return null;
         }
@@ -379,9 +492,14 @@ public final class ContentUtils {
             return visitDir(dir);
         }
 
-        private java.io.File getFsContentDest(Content fsc) {
+        @Override
+        public Void visit(LocalDirectory dir) {
+            return visitDir(dir);
+        }
+
+        private java.io.File getFsContentDest(Content content) {
             String path = dest.getAbsolutePath() + java.io.File.separator
-                    + fsc.getName();
+                    + content.getName();
             return new java.io.File(path);
         }
 
@@ -398,22 +516,24 @@ public final class ContentUtils {
                 int numProcessed = 0;
                 // recurse on children
                 for (Content child : dir.getChildren()) {
-                    java.io.File childFile = getFsContentDest(child);
-                    ExtractFscContentVisitor<T, V> childVisitor
-                            = new ExtractFscContentVisitor<>(childFile, progress, worker, false);
-                    // If this is the source directory of an extract it
-                    // will have a progress and worker, and will keep track
-                    // of the progress bar's progress
-                    if (worker != null && worker.isCancelled()) {
-                        break;
+                    if (child instanceof AbstractFile) { //ensure the directory's artifact children are ignored
+                        java.io.File childFile = getFsContentDest(child);
+                        ExtractFscContentVisitor<T, V> childVisitor
+                                = new ExtractFscContentVisitor<>(childFile, progress, worker, false);
+                        // If this is the source directory of an extract it
+                        // will have a progress and worker, and will keep track
+                        // of the progress bar's progress
+                        if (worker != null && worker.isCancelled()) {
+                            break;
+                        }
+                        if (progress != null && source) {
+                            progress.progress(child.getName(), numProcessed);
+                        }
+                        child.accept(childVisitor);
+                        numProcessed++;
                     }
-                    if (progress != null && source) {
-                        progress.progress(child.getName(), numProcessed);
-                    }
-                    child.accept(childVisitor);
-                    numProcessed++;
                 }
-            } catch (TskException ex) {
+            } catch (TskCoreException ex) {
                 logger.log(Level.SEVERE,
                         "Trouble fetching children to extract.", ex); //NON-NLS
             }
@@ -437,5 +557,5 @@ public final class ContentUtils {
     public static boolean shouldDisplayTimesInLocalTime() {
         return displayTimesInLocalTime;
     }
-    
+
 }

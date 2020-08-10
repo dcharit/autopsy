@@ -1,3 +1,21 @@
+/*
+ * Autopsy Forensic Browser
+ *
+ * Copyright 2011-2018 Basis Technology Corp.
+ * Contact: carrier <at> sleuthkit <dot> org
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package org.sleuthkit.autopsy.datamodel;
 
 import com.google.common.collect.Range;
@@ -7,12 +25,12 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.util.Optional;
 import java.util.logging.Level;
-import java.util.logging.Logger;
 import javax.annotation.concurrent.GuardedBy;
 import org.apache.commons.csv.CSVFormat;
 import org.apache.commons.csv.CSVParser;
 import org.apache.commons.csv.CSVRecord;
 import org.apache.commons.lang3.StringUtils;
+import org.sleuthkit.autopsy.coreutils.Logger;
 import org.sleuthkit.autopsy.coreutils.MessageNotifyUtil;
 import org.sleuthkit.autopsy.datamodel.accounts.BINRange;
 
@@ -90,7 +108,9 @@ public class CreditCards {
         Optional<String> getScheme();
     }
 
-    private static final Logger LOGGER = Logger.getLogger(CreditCards.class.getName());
+    private static final Logger logger = Logger.getLogger(CreditCards.class.getName());
+
+  
     /**
      * Range Map from a (ranges of) BINs to data model object with details of
      * the BIN, ie, bank name, phone, url, visa/amex/mastercard/...,
@@ -146,12 +166,12 @@ public class CreditCards {
                         binRanges.put(Range.closed(binRange.getBINstart(), binRange.getBINend()), binRange);
 
                     } catch (NumberFormatException numberFormatException) {
-                        LOGGER.log(Level.WARNING, "Failed to parse BIN range: " + record.toString(), numberFormatException); //NON-NLS
+                        logger.log(Level.WARNING, "Failed to parse BIN range: " + record.toString(), numberFormatException); //NON-NLS
                     }
                     binsLoaded = true;
                 }
             } catch (IOException ex) {
-                LOGGER.log(Level.WARNING, "Failed to load BIN ranges form ranges.csv", ex); //NON-NLS
+                logger.log(Level.WARNING, "Failed to load BIN ranges form ranges.csv", ex); //NON-NLS
                 MessageNotifyUtil.Notify.warn("Credit Card Number Discovery", "There was an error loading Bank Identification Number information.  Accounts will not have their BINs identified.");
             }
         }

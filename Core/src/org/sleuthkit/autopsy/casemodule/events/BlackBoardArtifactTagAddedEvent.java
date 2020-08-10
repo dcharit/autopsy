@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2015 Basis Technology Corp.
+ * Copyright 2015-2018 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,8 +19,12 @@
 package org.sleuthkit.autopsy.casemodule.events;
 
 import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.List;
 import javax.annotation.concurrent.Immutable;
 import org.sleuthkit.autopsy.casemodule.Case;
+import org.sleuthkit.autopsy.casemodule.NoCurrentCaseException;
+import org.sleuthkit.autopsy.casemodule.events.BlackBoardArtifactTagDeletedEvent.DeletedBlackboardArtifactTagInfo;
 import org.sleuthkit.datamodel.BlackboardArtifactTag;
 import org.sleuthkit.datamodel.TskCoreException;
 
@@ -28,7 +32,7 @@ import org.sleuthkit.datamodel.TskCoreException;
  * Event sent when a black board artifact tag is added.
  */
 @Immutable
-public class BlackBoardArtifactTagAddedEvent extends TagAddedEvent<BlackboardArtifactTag> implements Serializable {
+public class BlackBoardArtifactTagAddedEvent extends TagAddedEvent<BlackboardArtifactTag, DeletedBlackboardArtifactTagInfo> implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
@@ -36,16 +40,40 @@ public class BlackBoardArtifactTagAddedEvent extends TagAddedEvent<BlackboardArt
         super(Case.Events.BLACKBOARD_ARTIFACT_TAG_ADDED.toString(), newTag);
     }
 
+    public BlackBoardArtifactTagAddedEvent(BlackboardArtifactTag newTag, List<BlackboardArtifactTag> removedTagList) {
+        super(Case.Events.BLACKBOARD_ARTIFACT_TAG_ADDED.toString(), newTag, (removedTagList != null ? getDeletedInfo(removedTagList) : null));
+    }
+
     /**
      * get the BlackboardArtifactTag that was added by its id
      *
      * @return BlackboardArtifactTag that was added
      *
-     * @throws IllegalStateException
+     * @throws NoCurrentCaseException
      * @throws TskCoreException
      */
     @Override
-    BlackboardArtifactTag getTagByID() throws IllegalStateException, TskCoreException {
-        return Case.getCurrentCase().getServices().getTagsManager().getBlackboardArtifactTagByTagID(getTagID());
+    BlackboardArtifactTag getTagByID() throws NoCurrentCaseException, TskCoreException {
+        return Case.getCurrentCaseThrows().getServices().getTagsManager().getBlackboardArtifactTagByTagID(getTagID());
+    }
+    
+    /**
+     * Create a list of DeletedContentTagInfo objects from a list of
+     * BlackboardArtifactTags.
+     *
+     * @param deletedTagList List of deleted ContentTags.
+     *
+     * @return List of DeletedContentTagInfo objects or empty list if
+     *         deletedTagList was empty or null.
+     */
+    private static List<DeletedBlackboardArtifactTagInfo> getDeletedInfo(List<BlackboardArtifactTag> deletedTagList) {
+        List<DeletedBlackboardArtifactTagInfo> deletedInfoList = new ArrayList<>();
+        if (deletedTagList != null) {
+            for (BlackboardArtifactTag tag : deletedTagList) {
+                deletedInfoList.add(new DeletedBlackboardArtifactTagInfo(tag));
+            }
+        }
+
+        return deletedInfoList;
     }
 }

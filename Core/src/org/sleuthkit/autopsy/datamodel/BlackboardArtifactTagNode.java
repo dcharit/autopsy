@@ -1,7 +1,7 @@
 /*
  * Autopsy Forensic Browser
  *
- * Copyright 2013-2016 Basis Technology Corp.
+ * Copyright 2013-2020 Basis Technology Corp.
  * Contact: carrier <at> sleuthkit <dot> org
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,23 +19,23 @@
 package org.sleuthkit.autopsy.datamodel;
 
 import java.text.MessageFormat;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.logging.Level;
 import javax.swing.Action;
-import org.openide.nodes.Children;
 import org.openide.nodes.Sheet;
 import org.openide.util.NbBundle;
+import org.openide.util.NbBundle.Messages;
 import org.openide.util.lookup.Lookups;
-import org.sleuthkit.autopsy.actions.DeleteBlackboardArtifactTagAction;
 import org.sleuthkit.autopsy.coreutils.Logger;
-import org.sleuthkit.autopsy.coreutils.MessageNotifyUtil;
 import org.sleuthkit.autopsy.timeline.actions.ViewArtifactInTimelineAction;
 import org.sleuthkit.autopsy.timeline.actions.ViewFileInTimelineAction;
 import org.sleuthkit.datamodel.AbstractFile;
 import org.sleuthkit.datamodel.BlackboardArtifact;
 import org.sleuthkit.datamodel.BlackboardArtifactTag;
 import org.sleuthkit.datamodel.TskCoreException;
+import static org.sleuthkit.autopsy.datamodel.Bundle.*;
 
 /**
  * Instances of this class wrap BlackboardArtifactTag objects. In the Autopsy
@@ -44,19 +44,21 @@ import org.sleuthkit.datamodel.TskCoreException;
  * tag name nodes have tag type child nodes; tag type nodes are the parents of
  * either content or blackboard artifact tag nodes.
  */
-public class BlackboardArtifactTagNode extends DisplayableItemNode {
-  private static final Logger LOGGER = Logger.getLogger(BlackboardArtifactTagNode.class.getName());
+public class BlackboardArtifactTagNode extends TagNode {
+
+    private static final Logger LOGGER = Logger.getLogger(BlackboardArtifactTagNode.class.getName());
     private static final String ICON_PATH = "org/sleuthkit/autopsy/images/green-tag-icon-16.png"; //NON-NLS
     private final BlackboardArtifactTag tag;
 
     public BlackboardArtifactTagNode(BlackboardArtifactTag tag) {
-        super(Children.LEAF, Lookups.fixed(tag, tag.getArtifact(), tag.getContent()));
+        super(Lookups.fixed(tag, tag.getArtifact(), tag.getContent()), tag.getContent());
         super.setName(tag.getContent().getName());
         super.setDisplayName(tag.getContent().getName());
         this.setIconBaseWithExtension(ICON_PATH);
         this.tag = tag;
     }
 
+    @Messages({"BlackboardArtifactTagNode.createSheet.userName.text=User Name"})
     @Override
     protected Sheet createSheet() {
         Sheet propertySheet = super.createSheet();
@@ -71,6 +73,7 @@ public class BlackboardArtifactTagNode extends DisplayableItemNode {
                 NbBundle.getMessage(this.getClass(), "BlackboardArtifactTagNode.createSheet.srcFile.text"),
                 "",
                 tag.getContent().getName()));
+        addOriginalNameProp(properties);
         String contentPath;
         try {
             contentPath = tag.getContent().getUniquePath();
@@ -93,15 +96,19 @@ public class BlackboardArtifactTagNode extends DisplayableItemNode {
                 NbBundle.getMessage(this.getClass(), "BlackboardArtifactTagNode.createSheet.comment.text"),
                 "",
                 tag.getComment()));
-
+        properties.put(new NodeProperty<>(
+                NbBundle.getMessage(this.getClass(), "BlackboardArtifactTagNode.createSheet.userName.text"),
+                NbBundle.getMessage(this.getClass(), "BlackboardArtifactTagNode.createSheet.userName.text"),
+                "",
+                tag.getUserName()));
         return propertySheet;
     }
 
+    @NbBundle.Messages("BlackboardArtifactTagNode.viewSourceArtifact.text=View Source Result")
     @Override
     public Action[] getActions(boolean context) {
-        List<Action> actions = DataModelActionsFactory.getActions(tag.getContent(), true);
+        List<Action> actions = new ArrayList<>();
         actions.addAll(Arrays.asList(super.getActions(context)));
-
         BlackboardArtifact artifact = getLookup().lookup(BlackboardArtifact.class);
         //if this artifact has a time stamp add the action to view it in the timeline
         try {
@@ -110,7 +117,6 @@ public class BlackboardArtifactTagNode extends DisplayableItemNode {
             }
         } catch (TskCoreException ex) {
             LOGGER.log(Level.SEVERE, MessageFormat.format("Error getting arttribute(s) from blackboard artifact{0}.", artifact.getArtifactID()), ex); //NON-NLS
-            MessageNotifyUtil.Notify.error(Bundle.BlackboardArtifactNode_getAction_errorTitle(), Bundle.BlackboardArtifactNode_getAction_resultErrorMessage());
         }
 
         // if the artifact links to another file, add an action to go to that file
@@ -121,28 +127,21 @@ public class BlackboardArtifactTagNode extends DisplayableItemNode {
             }
         } catch (TskCoreException ex) {
             LOGGER.log(Level.SEVERE, MessageFormat.format("Error getting linked file from blackboard artifact{0}.", artifact.getArtifactID()), ex); //NON-NLS
-            MessageNotifyUtil.Notify.error(Bundle.BlackboardArtifactNode_getAction_errorTitle(), Bundle.BlackboardArtifactNode_getAction_linkedFileMessage());
         }
-
         //if this artifact has associated content, add the action to view the content in the timeline
         AbstractFile file = getLookup().lookup(AbstractFile.class);
         if (null != file) {
-
             actions.add(ViewFileInTimelineAction.createViewSourceFileAction(file));
         }
+        actions.add(new ViewTaggedArtifactAction(BlackboardArtifactTagNode_viewSourceArtifact_text(), artifact));
+        actions.addAll(DataModelActionsFactory.getActions(tag, true));
 
-        actions.add(DeleteBlackboardArtifactTagAction.getInstance());
         return actions.toArray(new Action[0]);
     }
 
     @Override
-    public <T> T accept(DisplayableItemNodeVisitor<T> v) {
-        return v.visit(this);
-    }
-
-    @Override
-    public boolean isLeafTypeNode() {
-        return true;
+    public <T> T accept(DisplayableItemNodeVisitor<T> visitor) {
+        return visitor.visit(this);
     }
 
     @Override
